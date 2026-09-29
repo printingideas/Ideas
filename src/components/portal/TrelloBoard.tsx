@@ -26,7 +26,7 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { MoreHorizontal, Plus, Trash2, X } from "lucide-react";
 
 export type BoardItem = { id: string; status: string; position?: number };
-export type BoardColumn = { key: string; label: string; accent?: string };
+export type BoardColumn = { key: string; label: string; accent?: string | null };
 
 const POS_STEP = 1000;
 
@@ -52,7 +52,9 @@ export function TrelloBoard<T extends BoardItem>({
   renderColumnFooter,
   onAddColumn,
   onUpdateColumn,
-  onDeleteColumn
+  onDeleteColumn,
+  renderColumnHeaderExtra,
+  renderColumnMenuExtra
 }: {
   initialItems: T[];
   columns: BoardColumn[];
@@ -63,11 +65,29 @@ export function TrelloBoard<T extends BoardItem>({
   onAddColumn?: (label: string) => Promise<void>;
   onUpdateColumn?: (key: string, patch: { label?: string; accent?: string | null }) => Promise<void>;
   onDeleteColumn?: (key: string) => Promise<void>;
+  /** Extra content rendered in the column header, next to the card count (e.g. owner avatars). */
+  renderColumnHeaderExtra?: (col: BoardColumn) => React.ReactNode;
+  /** Extra content rendered inside the "Opciones de lista" menu, below Color and above Eliminar lista. */
+  renderColumnMenuExtra?: (col: BoardColumn) => React.ReactNode;
 }) {
   const [items, setItems] = useState<T[]>(initialItems);
 
   // Re-sync when parent provides new data (e.g. router.refresh()).
-  const sig = initialItems.map((i) => `${i.id}:${i.status}:${i.position ?? ""}`).join("|");
+  // Include coverImage and attachments in the sig so cover/attachment edits
+  // are reflected without a status/position change.
+  const sig = initialItems.map((i) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const any = i as any;
+    const cover: string = any.coverImage ?? "";
+    const attachLen: number = (any.attachments as string[] | undefined)?.length ?? 0;
+    const title: string = any.title ?? "";
+    const priority: string = any.priority ?? "";
+    const hasDesc: 0 | 1 = any.description ? 1 : 0;
+    const hours: number = any.hours ?? 0;
+    const due: string = any.dueDate ?? "";
+    const memberCount: number = (any.members as unknown[] | undefined)?.length ?? 0;
+    return `${i.id}:${i.status}:${i.position ?? ""}:${cover}:${attachLen}:${title}:${priority}:${hasDesc}:${hours}:${due}:${memberCount}`;
+  }).join("|");
   const [lastSig, setLastSig] = useState(sig);
   if (sig !== lastSig) {
     setLastSig(sig);
@@ -79,6 +99,41 @@ export function TrelloBoard<T extends BoardItem>({
   const [mobileCol, setMobileCol] = useState<string>(columns[0]?.key ?? "");
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
 
+  // Click-and-drag panning on empty board background (column headers, footers,
+  // "Soltar aquí" placeholders) — lets you scroll horizontally without hunting
+  // for the scrollbar. Cards/buttons/inputs are excluded so it never steals a
+  // sortable-card drag or a click on a real control.
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const panRef = useRef<{ startX: number; startScrollLeft: number; moved: boolean } | null>(null);
+  const [isPanning, setIsPanning] = useState(false);
+
+  function handlePanPointerDown(e: React.PointerEvent<HTMLDivElement>) {
+    if (e.button !== 0) return;
+    const target = e.target as HTMLElement;
+    const excluded = target.closest('button, [role="button"], input, textarea, select, a, [contenteditable="true"]');
+    if (excluded) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    panRef.current = { startX: e.clientX, startScrollLeft: el.scrollLeft, moved: false };
+    el.setPointerCapture(e.pointerId);
+  }
+  function handlePanPointerMove(e: React.PointerEvent<HTMLDivElement>) {
+    const pan = panRef.current;
+    const el = scrollRef.current;
+    if (!pan || !el) return;
+    const dx = e.clientX - pan.startX;
+    if (!pan.moved && Math.abs(dx) < 5) return;
+    pan.moved = true;
+    if (!isPanning) setIsPanning(true);
+    el.scrollLeft = pan.startScrollLeft - dx;
+  }
+  function endPan(e: React.PointerEvent<HTMLDivElement>) {
+    const el = scrollRef.current;
+    if (el && el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
+    panRef.current = null;
+    setIsPanning(false);
+  }
+
   // @dnd-kit uses a global counter for `aria-describedby` IDs which causes
   // hydration mismatches when other DndContexts mount before this one. Use a
   // stable React id so SSR and client agree.
@@ -88,8 +143,13 @@ export function TrelloBoard<T extends BoardItem>({
 
   const grouped = useMemo(() => {
     const g: Record<string, T[]> = {};
+    const knownKeys = new Set(columns.map((c) => c.key));
+    const fallbackKey = columns[0]?.key ?? "";
     for (const c of columns) g[c.key] = [];
-    for (const i of items) (g[i.status] ??= []).push(i);
+    for (const i of items) {
+      const key = knownKeys.has(i.status) ? i.status : fallbackKey;
+      (g[key] ??= []).push(i);
+    }
     return g;
   }, [items, columns]);
 
@@ -223,10 +283,13 @@ export function TrelloBoard<T extends BoardItem>({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: moved.status, position: newPosition })
       });
-      if (!res.ok) throw new Error("save failed");
-    } catch {
+      if (!res.ok) {
+        const info = await res.json().catch(() => null);
+        throw new Error(info?.message || "No se pudo guardar el cambio. Intenta de nuevo.");
+      }
+    } catch (err) {
       if (preSnapshot) setItems(preSnapshot);
-      alert("No se pudo guardar el cambio. Intenta de nuevo.");
+      alert(err instanceof Error ? err.message : "No se pudo guardar el cambio. Intenta de nuevo.");
     } finally {
       setSavingId(null);
     }
@@ -284,11 +347,16 @@ export function TrelloBoard<T extends BoardItem>({
       </div>
 
       {/* ─── COLUMNS ─── */}
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-        {columns.map((col) => {
-          const isActiveMobile = mobileCol === col.key;
-          return (
-            <div key={col.key} className={isActiveMobile ? "block" : "hidden md:block"}>
+      <div
+        ref={scrollRef}
+        onPointerDown={handlePanPointerDown}
+        onPointerMove={handlePanPointerMove}
+        onPointerUp={endPan}
+        onPointerCancel={endPan}
+        className={`hidden md:flex gap-3 overflow-x-auto pb-4 items-start board-hscroll ${isPanning ? "is-panning" : "cursor-grab"}`}
+      >
+        {columns.map((col) => (
+          <div key={col.key} className="min-w-[275px] w-[275px] shrink-0">
               <Column
                 col={col}
                 items={grouped[col.key] ?? []}
@@ -298,16 +366,40 @@ export function TrelloBoard<T extends BoardItem>({
                 footer={renderColumnFooter?.(col)}
                 onUpdateColumn={onUpdateColumn}
                 onDeleteColumn={onDeleteColumn}
+                headerExtra={renderColumnHeaderExtra?.(col)}
+                menuExtra={renderColumnMenuExtra?.(col)}
               />
             </div>
-          );
-        })}
+          ))}
         {onAddColumn && (
-          <div className="hidden md:block">
+          <div className="min-w-[180px] shrink-0">
             <AddColumnTile onAdd={onAddColumn} />
           </div>
         )}
       </div>
+
+      {/* ─── MOBILE: single active column ─── */}
+      <div className="md:hidden">
+        {columns.map((col) => {
+          if (mobileCol !== col.key) return null;
+          return (
+            <Column
+              key={col.key}
+              col={col}
+              items={grouped[col.key] ?? []}
+              renderCard={renderCard}
+              savingId={savingId}
+              onCardClick={onCardClick}
+              footer={renderColumnFooter?.(col)}
+              onUpdateColumn={onUpdateColumn}
+              onDeleteColumn={onDeleteColumn}
+              headerExtra={renderColumnHeaderExtra?.(col)}
+              menuExtra={renderColumnMenuExtra?.(col)}
+            />
+          );
+        })}
+      </div>
+
       <DragOverlay dropAnimation={null}>
         {activeItem ? (
           <div className="rotate-2 scale-[1.02] shadow-2xl shadow-black/50">
@@ -327,7 +419,9 @@ function Column<T extends BoardItem>({
   onCardClick,
   footer,
   onUpdateColumn,
-  onDeleteColumn
+  onDeleteColumn,
+  headerExtra,
+  menuExtra
 }: {
   col: BoardColumn;
   items: T[];
@@ -337,12 +431,14 @@ function Column<T extends BoardItem>({
   footer?: React.ReactNode;
   onUpdateColumn?: (key: string, patch: { label?: string; accent?: string | null }) => Promise<void>;
   onDeleteColumn?: (key: string) => Promise<void>;
+  headerExtra?: React.ReactNode;
+  menuExtra?: React.ReactNode;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: col.key });
   return (
     <div
       ref={setNodeRef}
-      className={`group rounded-2xl border bg-[#1d2329]/80 min-h-[420px] transition flex flex-col overflow-hidden ${
+      className={`group rounded-2xl border bg-[#1d2329]/80 transition flex flex-col overflow-hidden h-[calc(100vh-13rem)] ${
         isOver
           ? "border-[var(--color-brand-500)]/60"
           : "border-white/5"
@@ -350,12 +446,13 @@ function Column<T extends BoardItem>({
     >
       {/* Trello-style colored top bar */}
       {col.accent && <div className={`h-1.5 w-full ${col.accent}`} />}
-      <div className="px-3 sm:px-4 pt-3 pb-3 flex flex-col flex-1">
+      <div className="px-3 sm:px-4 pt-3 pb-3 flex flex-col flex-1 min-h-0">
       <div className="hidden md:flex items-center justify-between mb-3 gap-2">
         <h3 className="font-semibold text-sm text-white/90 truncate">
           {col.label}
         </h3>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1.5">
+          {headerExtra}
           <span className="text-[11px] px-2 py-0.5 rounded-full bg-white/10 text-white/70">
             {items.length}
           </span>
@@ -364,12 +461,16 @@ function Column<T extends BoardItem>({
               col={col}
               onUpdateColumn={onUpdateColumn}
               onDeleteColumn={onDeleteColumn}
+              menuExtra={menuExtra}
             />
           )}
         </div>
       </div>
       <SortableContext items={items.map((i) => i.id)} strategy={verticalListSortingStrategy}>
-        <div className="space-y-3 flex-1">
+        <div
+          className="space-y-3 overflow-y-auto flex-1 min-h-0 pr-0.5"
+          style={{ scrollbarWidth: "thin", scrollbarColor: "rgba(255,255,255,0.12) transparent" }}
+        >
           {items.map((item) => (
             <Card
               key={item.id}
@@ -386,7 +487,7 @@ function Column<T extends BoardItem>({
           )}
         </div>
       </SortableContext>
-      {footer && <div className="mt-3">{footer}</div>}
+      {footer && <div className="mt-3 shrink-0">{footer}</div>}
       </div>
     </div>
   );
@@ -459,11 +560,13 @@ const COLUMN_ACCENTS: { value: string; label: string; swatch: string }[] = [
 function ColumnMenu({
   col,
   onUpdateColumn,
-  onDeleteColumn
+  onDeleteColumn,
+  menuExtra
 }: {
   col: BoardColumn;
   onUpdateColumn?: (key: string, patch: { label?: string; accent?: string | null }) => Promise<void>;
   onDeleteColumn?: (key: string) => Promise<void>;
+  menuExtra?: React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const [label, setLabel] = useState(col.label);
@@ -597,6 +700,7 @@ function ColumnMenu({
               </div>
             </div>
           )}
+          {menuExtra}
           {onDeleteColumn && (
             <button
               type="button"

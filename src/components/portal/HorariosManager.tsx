@@ -59,6 +59,20 @@ export function HorariosManager({
   const [filterTo, setFilterTo] = useState("");
   const [showSummary, setShowSummary] = useState(false);
 
+  // Calculate Sunday to Saturday dates for the current week
+  const weekDates = useMemo(() => {
+    const now = new Date();
+    const dates = [];
+    const sunday = new Date(now);
+    sunday.setDate(now.getDate() - now.getDay());
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(sunday);
+      d.setDate(sunday.getDate() + i);
+      dates.push(d);
+    }
+    return dates;
+  }, []);
+
   // Filtered punches
   const filteredPunches = useMemo(() => {
     return punches.filter((p) => {
@@ -174,11 +188,19 @@ export function HorariosManager({
                   <th className="text-left px-4 py-3 sticky left-0 bg-[#0c1422] z-10 min-w-[180px]">
                     Empleado
                   </th>
-                  {DAYS_SHORT.map((d, i) => (
-                    <th key={i} className="text-left px-3 py-3 min-w-[140px]">
-                      {d}
-                    </th>
-                  ))}
+                  {DAYS_SHORT.map((d, i) => {
+                    const dObj = weekDates[i];
+                    const dateNum = dObj.getDate();
+                    const monthStr = dObj.toLocaleDateString("es-PR", { month: "short" }).replace(".", "");
+                    return (
+                      <th key={i} className="text-left px-3 py-3 min-w-[140px]">
+                        <span className="block text-[10px] text-white/45 font-bold uppercase tracking-wider">{d}</span>
+                        <span className="block text-xs font-extrabold text-[var(--color-brand-400)] mt-0.5 whitespace-nowrap">
+                          {dateNum} {monthStr}
+                        </span>
+                      </th>
+                    );
+                  })}
                 </tr>
               </thead>
               <tbody>
@@ -423,7 +445,8 @@ export function HorariosManager({
                           <button
                             onClick={async () => {
                               if (!confirm("¿Eliminar este ponche?")) return;
-                              await fetch(`/api/ponche/${p.id}`, { method: "DELETE" });
+                              const res = await fetch(`/api/ponche/${p.id}`, { method: "DELETE" });
+                              if (!res.ok) { alert("No se pudo eliminar el ponche. Intenta de nuevo."); return; }
                               router.refresh();
                             }}
                             className="p-1.5 rounded hover:bg-red-500/20 text-red-300"
@@ -471,7 +494,8 @@ export function HorariosManager({
                               <button
                                 onClick={async () => {
                                   if (!confirm("¿Eliminar este descanso?")) return;
-                                  await fetch(`/api/ponche/break/${b.id}`, { method: "DELETE" });
+                                  const res = await fetch(`/api/ponche/break/${b.id}`, { method: "DELETE" });
+                                  if (!res.ok) { alert("No se pudo eliminar el descanso. Intenta de nuevo."); return; }
                                   router.refresh();
                                 }}
                                 className="p-1.5 rounded hover:bg-red-500/20 text-red-300"
@@ -587,18 +611,21 @@ function ShiftEditorModal({
     setBusy(true);
     try {
       const body = { userId, dayOfWeek, start, end, label: label || null, active };
-      if (isEdit) {
-        await fetch(`/api/horarios/${shift.id}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body)
-        });
-      } else {
-        await fetch("/api/horarios", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body)
-        });
+      const res = isEdit
+        ? await fetch(`/api/horarios/${shift.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body)
+          })
+        : await fetch("/api/horarios", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body)
+          });
+      if (!res.ok) {
+        const info = await res.json().catch(() => ({}));
+        alert(info?.error || "No se pudo guardar el turno. Intenta de nuevo.");
+        return;
       }
       onSaved();
     } finally {
@@ -610,8 +637,16 @@ function ShiftEditorModal({
     if (!shift.id) return;
     if (!confirm("¿Eliminar este turno?")) return;
     setBusy(true);
-    await fetch(`/api/horarios/${shift.id}`, { method: "DELETE" });
-    onSaved();
+    try {
+      const res = await fetch(`/api/horarios/${shift.id}`, { method: "DELETE" });
+      if (!res.ok) {
+        alert("No se pudo eliminar el turno. Intenta de nuevo.");
+        return;
+      }
+      onSaved();
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
@@ -738,19 +773,25 @@ function PunchEditorModal({
         out: outVal ? new Date(outVal).toISOString() : null,
         note: note || null
       };
+      let res: Response;
       if (isNew) {
         body.userId = userId;
-        await fetch("/api/ponche/admin", {
+        res = await fetch("/api/ponche/admin", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body)
         });
       } else {
-        await fetch(`/api/ponche/${punch.id}`, {
+        res = await fetch(`/api/ponche/${punch.id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body)
         });
+      }
+      if (!res.ok) {
+        const info = await res.json().catch(() => ({}));
+        alert(info?.error || "No se pudo guardar el ponche. Intenta de nuevo.");
+        return;
       }
       onSaved();
     } finally {
@@ -833,7 +874,7 @@ function AddBreakModal({
   async function save() {
     setBusy(true);
     try {
-      await fetch(`/api/ponche/${punchId}/break`, {
+      const res = await fetch(`/api/ponche/${punchId}/break`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -841,6 +882,11 @@ function AddBreakModal({
           end: endVal ? new Date(endVal).toISOString() : null
         })
       });
+      if (!res.ok) {
+        const info = await res.json().catch(() => ({}));
+        alert(info?.error || "No se pudo guardar el descanso. Intenta de nuevo.");
+        return;
+      }
       onSaved();
     } finally {
       setBusy(false);
@@ -900,7 +946,7 @@ function BreakEditorModal({
   async function save() {
     setBusy(true);
     try {
-      await fetch(`/api/ponche/break/${breakRecord.id}`, {
+      const res = await fetch(`/api/ponche/break/${breakRecord.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -908,6 +954,11 @@ function BreakEditorModal({
           end: endVal ? new Date(endVal).toISOString() : null
         })
       });
+      if (!res.ok) {
+        const info = await res.json().catch(() => ({}));
+        alert(info?.error || "No se pudo guardar el descanso. Intenta de nuevo.");
+        return;
+      }
       onSaved();
     } finally {
       setBusy(false);

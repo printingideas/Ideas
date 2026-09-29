@@ -1,23 +1,25 @@
-import { LayoutDashboard, ListChecks, Calendar, Fingerprint, MessageSquareText } from "lucide-react";
+import { LayoutDashboard, ListChecks, Calendar, Fingerprint, MessageSquareText, FileCheck, UserCog, CalendarOff } from "lucide-react";
 import { PortalShell } from "@/components/portal/PortalShell";
 import { requireRole } from "@/lib/auth-helpers";
 
 export default async function EmpleadoLayout({
-  children, params
+  children,
 }: { children: React.ReactNode; params: Promise<{ locale: string }> }) {
-  const { locale } = await params;
-  const user = await requireRole(["employee"], locale);
+  const user = await requireRole(["employee"]);
 
   const links = [
-    { href: `/${locale}/empleado`, label: "Panel", icon: LayoutDashboard },
-    { href: `/${locale}/empleado/ponche`, label: "Ponche", icon: Fingerprint },
-    { href: `/${locale}/empleado/tareas`, label: "Mis tareas", icon: ListChecks },
-    { href: `/${locale}/empleado/chat`, label: "Chat", icon: MessageSquareText },
-    { href: `/${locale}/empleado/horario`, label: "Horario", icon: Calendar }
+    { href: "/empleado", label: "Panel", icon: LayoutDashboard, iconName: "LayoutDashboard" },
+    { href: "/empleado/ponche", label: "Ponche", icon: Fingerprint, iconName: "Fingerprint" },
+    { href: "/empleado/dias-libres", label: "Días libres", icon: CalendarOff, iconName: "CalendarOff" },
+    { href: "/empleado/tareas", label: "Mis tareas", icon: ListChecks, iconName: "ListChecks" },
+    { href: "/empleado/chat", label: "Chat", icon: MessageSquareText, iconName: "MessageSquareText" },
+    { href: "/empleado/hojas", label: "Hojas", icon: FileCheck, iconName: "FileCheck" },
+    { href: "/empleado/horario", label: "Horario", icon: Calendar, iconName: "Calendar" },
+    { href: "/empleado/perfil", label: "Mi perfil", icon: UserCog, iconName: "UserCog" },
   ];
 
   return (
-    <PortalShell title="Portal de empleado" user={user} links={links} locale={locale}>
+    <PortalShell title="Portal de empleado" user={user} links={links}>
       {children}
     </PortalShell>
   );

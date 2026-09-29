@@ -3,9 +3,10 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { X, Trash2, Loader2, Save, Plus, Image as ImageIcon, Star, StarOff, Upload, Users, Search, MessageSquare, Activity, Send, Paperclip, AtSign, Play, Pause, CheckCircle, Clock, Timer } from "lucide-react";
+import { X, Trash2, Loader2, Save, Plus, Image as ImageIcon, Star, StarOff, Upload, Users, Search, MessageSquare, Activity, Send, Paperclip, AtSign, Play, Pause, CheckCircle, Clock, Timer, FileCheck, CheckSquare, Square, Printer } from "lucide-react";
 import type { TaskCard } from "./TaskBoard";
 import { MemberAvatar } from "./Avatar";
+import { ApprovalSheet } from "./ApprovalSheet";
 
 export type EditorUser = {
   id: string;
@@ -16,11 +17,20 @@ export type EditorUser = {
   company?: string | null;
 };
 
+export type EditorOrder = {
+  id: string;
+  number: string;
+  title: string;
+  clientName: string;
+};
+
 type Mode = "create" | "edit";
 
 const STATUS_OPTIONS = [
   { value: "todo", label: "Por hacer" },
   { value: "in_progress", label: "En progreso" },
+  { value: "review", label: "En revisión" },
+  { value: "produccion", label: "Producción" },
   { value: "blocked", label: "Bloqueada" },
   { value: "done", label: "Hecha" }
 ];
@@ -39,7 +49,11 @@ export function TaskEditor({
   users,
   currentUserId,
   canEdit = true,
-  onClose
+  orders,
+  defaultOrderId,
+  columns,
+  onClose,
+  onSaved,
 }: {
   open: boolean;
   mode: Mode;
@@ -48,9 +62,16 @@ export function TaskEditor({
   users: EditorUser[];
   currentUserId?: string;
   canEdit?: boolean;
+  orders?: EditorOrder[];
+  defaultOrderId?: string;
+  columns?: { key: string; label: string }[];
   onClose: () => void;
+  onSaved?: (updated: TaskCard) => void;
 }) {
   const router = useRouter();
+  const statusOptions = (columns && columns.length > 0)
+    ? columns.map((c) => ({ value: c.key, label: c.label }))
+    : STATUS_OPTIONS;
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [status, setStatus] = useState("todo");
@@ -60,15 +81,39 @@ export function TaskEditor({
   const [attachments, setAttachments] = useState<string[]>([]);
   const [coverImage, setCoverImage] = useState<string>("");
   const [memberIds, setMemberIds] = useState<string[]>([]);
+  const [orderId, setOrderId] = useState<string>("");
   const [uploading, setUploading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showApproval, setShowApproval] = useState(false);
+  const [approvalStatus, setApprovalStatus] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Reset form whenever the editor (re)opens
+  // Track the last (open, taskId) pair we initialised for, so that a
+  // server re-render while the modal is already open (e.g. from realtime
+  // fallback polling) does NOT reset the user's in-progress edits.
+  const lastInitRef = useRef<{ open: boolean; taskId: string | null }>({
+    open: false,
+    taskId: null,
+  });
+
+  // Reset form whenever the editor opens for the first time, or opens for a
+  // different task. Does NOT reset while the same task is already open.
   useEffect(() => {
-    if (!open) return;
+    const currentTaskId = mode === "edit" && task ? task.id : null;
+    const prev = lastInitRef.current;
+
+    if (!open) {
+      // Reset tracking when closed so the next open always re-initialises.
+      lastInitRef.current = { open: false, taskId: null };
+      return;
+    }
+
+    // Skip re-initialisation if the same task is still open.
+    if (prev.open && prev.taskId === currentTaskId) return;
+
+    lastInitRef.current = { open: true, taskId: currentTaskId };
     setError(null);
     if (mode === "edit" && task) {
       setTitle(task.title);
@@ -86,6 +131,7 @@ export function TaskEditor({
         ? [primaryId, ...memberList.filter((id) => id !== primaryId)]
         : memberList;
       setMemberIds(unified);
+      setOrderId(task.orderId ?? "");
     } else {
       setTitle("");
       setDescription("");
@@ -96,8 +142,20 @@ export function TaskEditor({
       setAttachments([]);
       setCoverImage("");
       setMemberIds([]);
+      setOrderId(defaultOrderId ?? "");
     }
-  }, [open, mode, task, defaultStatus]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, mode, task?.id, defaultStatus]);
+
+  // Load approval status when editing a task
+  useEffect(() => {
+    if (!open || mode !== "edit" || !task) return;
+    setApprovalStatus(null);
+    fetch(`/api/tareas/${task.id}/hoja`)
+      .then((r) => r.ok ? r.json() : null)
+      .then((s) => s ? setApprovalStatus(s.status) : null)
+      .catch(() => null);
+  }, [open, mode, task]);
 
   // Esc to close
   useEffect(() => {
@@ -126,7 +184,8 @@ export function TaskEditor({
       assigneeId: memberIds[0] || null,
       attachments,
       coverImage: coverImage || null,
-      members: memberIds
+      members: memberIds,
+      ...(mode === "create" && orderId ? { orderId } : {})
     };
     try {
       const url = mode === "create" ? "/api/tareas" : `/api/tareas/${task!.id}`;
@@ -136,7 +195,30 @@ export function TaskEditor({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
       });
-      if (!res.ok) throw new Error(`save failed (${res.status})`);
+      if (!res.ok) {
+        const info = await res.json().catch(() => null);
+        throw new Error(info?.message || `Error al guardar (${res.status})`);
+      }
+      // Update the active task in the parent with fresh values so that
+      // re-opening the modal before router.refresh() completes shows correct data.
+      if (mode === "edit" && task && onSaved) {
+        onSaved({
+          ...task,
+          title: title.trim(),
+          description: description.trim() || null,
+          status,
+          priority,
+          hours: Number(hours) || 0,
+          dueDate: dueDate ? new Date(dueDate + "T00:00:00").toISOString() : null,
+          assigneeId: memberIds[0] || null,
+          coverImage: coverImage || null,
+          attachments,
+          members: memberIds
+            .map((id) => users.find((u) => u.id === id))
+            .filter((u): u is EditorUser => !!u)
+            .map((u) => ({ id: u.id, name: u.name ?? u.email, avatar: u.avatar ?? null, role: u.role })),
+        });
+      }
       router.refresh();
       onClose();
     } catch (e) {
@@ -160,6 +242,151 @@ export function TaskEditor({
     } finally {
       setDeleting(false);
     }
+  }
+
+  async function handlePrint() {
+    const statusLabel =
+      statusOptions.find((o) => o.value === status)?.label ?? status;
+    const priorityLabel =
+      PRIORITY_OPTIONS.find((o) => o.value === priority)?.label ?? priority;
+    const memberNames = memberIds
+      .map((id) => users.find((u) => u.id === id))
+      .filter(Boolean)
+      .map((u) => u!.name ?? u!.email)
+      .join(", ");
+
+    // Fetch checklist and comments in parallel (best-effort).
+    let checkItems: { text: string; done: boolean }[] = [];
+    let comments: { actor: string; createdAt: string; body: string }[] = [];
+
+    if (task?.id) {
+      const [clRes, cmRes] = await Promise.allSettled([
+        fetch(`/api/tareas/${task.id}/checklist`).then((r) => r.ok ? r.json() : []),
+        fetch(`/api/tareas/${task.id}/comments`).then((r) => r.ok ? r.json() : null),
+      ]);
+      if (clRes.status === "fulfilled" && Array.isArray(clRes.value)) {
+        checkItems = clRes.value;
+      }
+      if (cmRes.status === "fulfilled" && cmRes.value?.feed) {
+        comments = (cmRes.value.feed as { kind: string; actor: { name: string }; createdAt: string; body: string }[])
+          .filter((e) => e.kind === "comment")
+          .sort((a, b) => +new Date(a.createdAt) - +new Date(b.createdAt))
+          .map((e) => ({
+            actor: e.actor?.name ?? "—",
+            createdAt: new Date(e.createdAt).toLocaleString("es-PR"),
+            body: e.body,
+          }));
+      }
+    }
+
+    const imagesHtml = attachments
+      .map(
+        (url) =>
+          `<img src="${url}" style="max-width:100%;max-height:220px;object-fit:cover;border-radius:8px;border:1px solid #e5e7eb;" />`
+      )
+      .join("\n");
+
+    const checklistHtml =
+      checkItems.length > 0
+        ? `<section>
+            <h2>Checklist</h2>
+            <ul style="list-style:none;padding:0;margin:0;">
+              ${checkItems
+                .map(
+                  (i) =>
+                    `<li style="display:flex;align-items:center;gap:8px;padding:4px 0;${i.done ? "opacity:.55;" : ""}">
+                      <span style="display:inline-block;width:14px;height:14px;border:2px solid #6b7280;border-radius:3px;background:${i.done ? "#22c55e" : "transparent"};flex-shrink:0;"></span>
+                      <span style="${i.done ? "text-decoration:line-through;" : ""}">${escHtml(i.text)}</span>
+                    </li>`
+                )
+                .join("")}
+            </ul>
+          </section>`
+        : "";
+
+    const commentsHtml =
+      comments.length > 0
+        ? `<section>
+            <h2>Comentarios</h2>
+            ${comments
+              .map(
+                (c) =>
+                  `<div style="border:1px solid #e5e7eb;border-radius:8px;padding:10px 14px;margin-bottom:10px;">
+                    <div style="font-weight:600;font-size:13px;">${escHtml(c.actor)} <span style="font-weight:400;color:#6b7280;font-size:12px;">&bull; ${c.createdAt}</span></div>
+                    <div style="margin-top:6px;white-space:pre-wrap;font-size:13px;">${escHtml(c.body)}</div>
+                  </div>`
+              )
+              .join("")}
+          </section>`
+        : "";
+
+    const orderLine =
+      task?.orderNumber
+        ? `<div><strong>Orden:</strong> #${escHtml(task.orderNumber)}${task.clientName ? ` — ${escHtml(task.clientName)}` : ""}</div>`
+        : "";
+
+    const html = `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>Tarea: ${escHtml(title)}</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; font-size: 14px; color: #111; margin: 0; padding: 28px 36px; line-height: 1.5; }
+    h1 { font-size: 22px; margin: 0 0 6px; }
+    h2 { font-size: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: #4b5563; margin: 20px 0 8px; border-bottom: 1px solid #e5e7eb; padding-bottom: 4px; }
+    section { margin-bottom: 18px; }
+    .meta { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px 24px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px 16px; margin-bottom: 18px; font-size: 13px; }
+    .meta strong { color: #374151; }
+    .description { white-space: pre-wrap; font-size: 13px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px 14px; }
+    .images { display: flex; flex-wrap: wrap; gap: 10px; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; text-transform: uppercase; }
+    .priority-urgent { background: #fef2f2; color: #dc2626; }
+    .priority-high { background: #fff7ed; color: #ea580c; }
+    .priority-normal { background: #eff6ff; color: #2563eb; }
+    .priority-low { background: #f0fdf4; color: #16a34a; }
+    @media print {
+      body { padding: 0; }
+      @page { margin: 15mm 15mm 15mm 15mm; }
+    }
+    .footer { margin-top: 32px; border-top: 1px solid #e5e7eb; padding-top: 10px; font-size: 11px; color: #9ca3af; display: flex; justify-content: space-between; }
+  </style>
+</head>
+<body>
+  <h1>${escHtml(title)}</h1>
+  ${orderLine}
+
+  <div class="meta">
+    <div><strong>Estado:</strong> ${escHtml(statusLabel)}</div>
+    <div><strong>Prioridad:</strong> <span class="badge priority-${priority}">${escHtml(priorityLabel)}</span></div>
+    <div><strong>Horas estimadas:</strong> ${hours}h</div>
+    <div><strong>Fecha límite:</strong> ${dueDate ? new Date(dueDate + "T00:00:00").toLocaleDateString("es-PR") : "—"}</div>
+    ${memberNames ? `<div style="grid-column:1/-1"><strong>Asignado a:</strong> ${escHtml(memberNames)}</div>` : ""}
+  </div>
+
+  ${description ? `<section><h2>Descripción</h2><div class="description">${escHtml(description)}</div></section>` : ""}
+
+  ${attachments.length > 0 ? `<section><h2>Imágenes</h2><div class="images">${imagesHtml}</div></section>` : ""}
+
+  ${checklistHtml}
+
+  ${commentsHtml}
+
+  <div class="footer">
+    <span>IDEAS PR · Tarea impresa el ${new Date().toLocaleString("es-PR")}</span>
+    ${task?.id ? `<span>ID: ${task.id}</span>` : ""}
+  </div>
+</body>
+</html>`;
+
+    const win = window.open("", "_blank", "width=900,height=700");
+    if (!win) return;
+    win.document.write(html);
+    win.document.close();
+    win.focus();
+    win.onload = () => win.print();
+    // Fallback in case onload already fired.
+    setTimeout(() => { if (!win.closed) win.print(); }, 600);
   }
 
   async function handleUploadFiles(files: FileList | null) {
@@ -200,6 +427,7 @@ export function TaskEditor({
   }
 
   return (
+    <>
     <AnimatePresence>
       {open && (
         <>
@@ -229,13 +457,25 @@ export function TaskEditor({
                   {mode === "create" ? "Nueva tarea" : "Editar tarea"}
                 </h2>
               </div>
-              <button
-                onClick={onClose}
-                className="p-2 -m-2 rounded-lg hover:bg-white/5 text-white/60 hover:text-white"
-                aria-label="Cerrar"
-              >
-                <X size={18} />
-              </button>
+              <div className="flex items-center gap-1">
+                {mode === "edit" && task && (
+                  <button
+                    onClick={handlePrint}
+                    className="p-2 rounded-lg hover:bg-white/5 text-white/60 hover:text-white"
+                    aria-label="Imprimir tarea"
+                    title="Imprimir tarea"
+                  >
+                    <Printer size={18} />
+                  </button>
+                )}
+                <button
+                  onClick={onClose}
+                  className="p-2 -m-2 rounded-lg hover:bg-white/5 text-white/60 hover:text-white"
+                  aria-label="Cerrar"
+                >
+                  <X size={18} />
+                </button>
+              </div>
             </div>
 
             <div className="px-5 py-5 space-y-4">
@@ -263,7 +503,7 @@ export function TaskEditor({
               <div className="grid grid-cols-2 gap-3">
                 <Field label="Estado">
                   <select value={status} onChange={(e) => setStatus(e.target.value)} className={inputCls}>
-                    {STATUS_OPTIONS.map((o) => (
+                    {statusOptions.map((o) => (
                       <option key={o.value} value={o.value}>{o.label}</option>
                     ))}
                   </select>
@@ -391,6 +631,11 @@ export function TaskEditor({
                 </div>
               </Field>
 
+              {/* Checklist (only for existing tasks) */}
+              {mode === "edit" && task?.id && (
+                <ChecklistSection taskId={task.id} canEdit={canEdit} />
+              )}
+
               {/* Employee time tracking (shown in task detail when canEdit=false) */}
               {!canEdit && mode === "edit" && task?.id && (
                 <WorkTimerSection
@@ -426,6 +671,19 @@ export function TaskEditor({
                 <span />
               )}
               <div className="flex items-center gap-2">
+                {mode === "edit" && task && (
+                  <button
+                    type="button"
+                    onClick={() => setShowApproval(true)}
+                    className="inline-flex items-center gap-2 text-xs font-bold px-3 py-2 rounded-lg border border-[var(--color-brand-500)]/50 text-[var(--color-brand-400)] hover:bg-[var(--color-brand-500)]/10 transition-colors"
+                  >
+                    <FileCheck size={14} />
+                    Hoja de aprobaci&#243;n
+                    {approvalStatus === "approved" && <span className="w-2 h-2 rounded-full bg-green-400" title="Aprobado" />}
+                    {approvalStatus === "changes_requested" && <span className="w-2 h-2 rounded-full bg-red-400" title="Cambios solicitados" />}
+                    {approvalStatus === "pending" && <span className="w-2 h-2 rounded-full bg-yellow-400" title="Pendiente" />}
+                  </button>
+                )}
                 <button
                   onClick={onClose}
                   disabled={saving || deleting}
@@ -447,11 +705,35 @@ export function TaskEditor({
         </>
       )}
     </AnimatePresence>
+
+    {/* Approval sheet — rendered outside the editor z-stack */}
+    {mode === "edit" && task && (
+      <ApprovalSheet
+        open={showApproval}
+        task={{
+          id: task.id,
+          title: task.title,
+          attachments: task.attachments ?? [],
+          orderNumber: task.orderNumber ?? undefined,
+          clientName: task.clientName ?? undefined,
+        }}
+        onClose={() => setShowApproval(false)}
+      />
+    )}
+    </>
   );
 }
 
 const inputCls =
   "w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-white/30 focus:outline-none focus:border-[var(--color-brand-500)]/60 focus:ring-1 focus:ring-[var(--color-brand-500)]/40";
+
+function escHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -503,17 +785,17 @@ function MembersPicker({
     const q = query.trim().toLowerCase();
     const list = users.filter((u) => {
       if (!q) return true;
-      const hay = `${u.name ?? ""} ${u.email} ${u.company ?? ""}`.toLowerCase();
+      const roleLabel = u.role === "client" ? "cliente" : u.role === "employee" ? "empleado" : "admin";
+      const hay = `${u.name ?? ""} ${u.email} ${u.company ?? ""} ${roleLabel}`.toLowerCase();
       return hay.includes(q);
     });
-    // Sort: team first (admin/employee), then clients; selected to top within each group.
+    // Sort: team first (admin/employee), then clients; alphabetical within each group.
+    // Do NOT sort selected items to the top — stable order prevents list jumping
+    // while the user is clicking multiple people.
     return list.sort((a, b) => {
       const ar = a.role === "client" ? 1 : 0;
       const br = b.role === "client" ? 1 : 0;
       if (ar !== br) return ar - br;
-      const aSel = value.includes(a.id) ? 0 : 1;
-      const bSel = value.includes(b.id) ? 0 : 1;
-      if (aSel !== bSel) return aSel - bSel;
       return (a.name ?? a.email).localeCompare(b.name ?? b.email);
     });
   }, [users, query, value]);
@@ -584,6 +866,11 @@ function MembersPicker({
               placeholder="Buscar empleado o cliente…"
               className="flex-1 bg-transparent outline-none text-sm placeholder-white/30"
             />
+            {value.length > 0 && (
+              <span className="shrink-0 text-[10px] font-semibold text-[var(--color-brand-400)] bg-[var(--color-brand-500)]/15 px-1.5 py-0.5 rounded-full">
+                {value.length} ✓
+              </span>
+            )}
           </div>
           <div className="max-h-72 overflow-y-auto py-1">
             {filtered.length === 0 && (
@@ -1150,6 +1437,13 @@ function describeActivity(
       return <>eliminó {(Array.isArray(d.urls) ? d.urls.length : 0)} adjunto(s).</>;
     case "cover_changed":
       return d.to ? <>actualizó la portada.</> : <>quitó la portada.</>;
+    case "checklist_auto_generated":
+      return (
+        <>
+          se generó el checklist de <em className="not-italic text-white/75">{statusLabel(String(d.column))}</em>{" "}
+          ({String(d.count)} elemento{Number(d.count) === 1 ? "" : "s"}).
+        </>
+      );
     default:
       return <>{e.type}</>;
   }
@@ -1160,7 +1454,17 @@ function statusLabel(s: string): string {
     todo: "Por hacer",
     in_progress: "En progreso",
     blocked: "Bloqueada",
-    done: "Hecha"
+    done: "Hecha",
+    review: "Para revisi\u00f3n",
+    produccion: "Producci\u00f3n",
+    // New Trello workflow columns:
+    pendientes:    "Jobs Pendientes",
+    espera:        "En Espera",
+    arte:          "Arte / Dise\u00f1o",
+    terminaciones: "Terminaciones",
+    instalacion:   "Instalaci\u00f3n",
+    facturar:      "Facturar",
+    cerrado:       "Cerrado",
   };
   return map[s] ?? s;
 }
@@ -1328,6 +1632,22 @@ function WorkTimerSection({
   const [totalLogged, setTotalLogged] = useState(loggedSeconds);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Inventory reporting state
+  const [inventory, setInventory] = useState<{ id: string; name: string; unit: string; category: string }[]>([]);
+  const [materialId, setMaterialId] = useState("");
+  const [materialQty, setMaterialQty] = useState("");
+
+  useEffect(() => {
+    fetch("/api/inventario")
+      .then((r) => r.json())
+      .then((data) => {
+        if (Array.isArray(data)) {
+          setInventory(data.filter((x) => x.active));
+        }
+      })
+      .catch(() => {});
+  }, []);
+
   // Live tick when session is active
   useEffect(() => {
     if (session) {
@@ -1363,12 +1683,22 @@ function WorkTimerSection({
       const res = await fetch(`/api/tareas/${taskId}/work-stop`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ submitForReview }),
+        body: JSON.stringify({
+          submitForReview,
+          materialId: materialId || null,
+          materialQty: materialQty ? parseFloat(materialQty) : 0
+        }),
       });
-      if (!res.ok) throw new Error("stop failed");
+      if (!res.ok) {
+        const info = await res.json().catch(() => null);
+        if (info?.message) alert(info.message);
+        throw new Error(info?.message || "stop failed");
+      }
       const data = await res.json();
       setTotalLogged((prev) => prev + (data.elapsedSeconds ?? 0));
       setSession(null);
+      setMaterialId("");
+      setMaterialQty("");
       router.refresh();
     } catch {
       // silent
@@ -1409,6 +1739,45 @@ function WorkTimerSection({
             </span>
             <span className="text-xs text-white/50 ml-auto">Sesión activa</span>
           </div>
+
+          {/* Material consumption inputs */}
+          {inventory.length > 0 && (
+            <div className="space-y-2 border-t border-white/5 pt-2">
+              <label className="block text-[10px] uppercase font-bold text-white/40 tracking-wider">
+                Registrar consumo de insumos (opcional)
+              </label>
+              <div className="grid grid-cols-[1.5fr_1fr] gap-2">
+                <select
+                  value={materialId}
+                  onChange={(e) => setMaterialId(e.target.value)}
+                  className="select text-xs py-1.5 h-auto bg-[var(--color-ink-850)] border-white/10"
+                >
+                  <option value="">Seleccionar material...</option>
+                  {inventory.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.name} ({item.category})
+                    </option>
+                  ))}
+                </select>
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    placeholder="Cant."
+                    value={materialQty}
+                    onChange={(e) => setMaterialQty(e.target.value)}
+                    className="input text-xs py-1.5 h-auto bg-[var(--color-ink-850)] border-white/10 w-full"
+                  />
+                  {materialId && (
+                    <span className="text-[10px] text-white/50 shrink-0">
+                      {inventory.find((x) => x.id === materialId)?.unit ?? ""}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="flex gap-2">
             <button
@@ -1454,6 +1823,150 @@ function WorkTimerSection({
           )}
           Comenzar trabajo
         </button>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Checklist section — shows a list of to-do items inside a task with checkboxes.
+// ─────────────────────────────────────────────────────────────────────────────
+type CheckItem = { id: string; text: string; done: boolean; position: number };
+
+function ChecklistSection({ taskId, canEdit }: { taskId: string; canEdit: boolean }) {
+  const [items, setItems] = useState<CheckItem[]>([]);
+  const [newText, setNewText] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [showInput, setShowInput] = useState(false);
+
+  useEffect(() => {
+    fetch(`/api/tareas/${taskId}/checklist`)
+      .then((r) => r.ok ? r.json() : [])
+      .then((data: CheckItem[]) => setItems(Array.isArray(data) ? data : []))
+      .catch(() => null);
+  }, [taskId]);
+
+  async function toggleItem(item: CheckItem) {
+    const updated = { ...item, done: !item.done };
+    setItems((prev) => prev.map((i) => i.id === item.id ? updated : i));
+    await fetch(`/api/tareas/${taskId}/checklist/${item.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ done: updated.done }),
+    }).catch(() => null);
+  }
+
+  async function deleteItem(id: string) {
+    setItems((prev) => prev.filter((i) => i.id !== id));
+    await fetch(`/api/tareas/${taskId}/checklist/${id}`, { method: "DELETE" }).catch(() => null);
+  }
+
+  async function addItem() {
+    const text = newText.trim();
+    if (!text) return;
+    setAdding(true);
+    try {
+      const res = await fetch(`/api/tareas/${taskId}/checklist`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      if (res.ok) {
+        const item: CheckItem = await res.json();
+        setItems((prev) => [...prev, item]);
+        setNewText("");
+        setShowInput(false);
+      }
+    } catch { /* ignore */ } finally {
+      setAdding(false);
+    }
+  }
+
+  const done = items.filter((i) => i.done).length;
+  const pct = items.length ? Math.round((done / items.length) * 100) : 0;
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs font-medium uppercase tracking-wider text-white/55 flex items-center gap-1.5">
+          <CheckSquare size={12} /> Checklist
+          {items.length > 0 && (
+            <span className="text-white/40 font-normal normal-case tracking-normal">
+              {done}/{items.length}
+            </span>
+          )}
+        </span>
+        {canEdit && (
+          <button
+            type="button"
+            onClick={() => setShowInput((v) => !v)}
+            className="text-xs text-white/40 hover:text-white"
+          >
+            {showInput ? "Cancelar" : "+ Añadir"}
+          </button>
+        )}
+      </div>
+
+      {items.length > 0 && (
+        <div className="mb-2 h-1.5 rounded-full bg-white/10 overflow-hidden">
+          <div
+            className="h-full rounded-full bg-emerald-500 transition-all"
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      )}
+
+      <div className="space-y-1">
+        {items.map((item) => (
+          <div key={item.id} className="flex items-start gap-2 group">
+            <button
+              type="button"
+              onClick={() => toggleItem(item)}
+              className="mt-0.5 shrink-0 text-white/50 hover:text-white"
+              aria-label={item.done ? "Desmarcar" : "Marcar como hecho"}
+            >
+              {item.done
+                ? <CheckSquare size={15} className="text-emerald-400" />
+                : <Square size={15} />}
+            </button>
+            <span className={`flex-1 text-sm ${item.done ? "line-through text-white/35" : "text-white/85"}`}>
+              {item.text}
+            </span>
+            {canEdit && (
+              <button
+                type="button"
+                onClick={() => deleteItem(item.id)}
+                className="opacity-0 group-hover:opacity-100 text-white/30 hover:text-red-400 transition"
+                aria-label="Eliminar"
+              >
+                <X size={13} />
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {showInput && (
+        <div className="mt-2 flex items-center gap-2">
+          <input
+            autoFocus
+            type="text"
+            value={newText}
+            onChange={(e) => setNewText(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addItem(); } }}
+            placeholder="Nuevo ítem…"
+            maxLength={500}
+            className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white placeholder-white/30 focus:outline-none focus:border-[var(--color-brand-500)]/60"
+          />
+          <button
+            type="button"
+            onClick={addItem}
+            disabled={adding || !newText.trim()}
+            className="px-3 py-1.5 rounded-lg bg-[var(--color-brand-500)] text-[var(--color-ink-950,#060b14)] text-xs font-bold disabled:opacity-50"
+          >
+            {adding ? <Loader2 size={13} className="animate-spin" /> : "Añadir"}
+          </button>
+        </div>
       )}
     </div>
   );

@@ -59,6 +59,8 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
   const cEmail   = inv.clientEmail   ?? inv.client?.email   ?? "";
   const cCompany = inv.clientCompany ?? inv.client?.company ?? "";
   const cPhone   = inv.clientPhone   ?? inv.client?.phone   ?? "";
+  const logoSetting = await prisma.siteSetting.findUnique({ where: { key: "logo_url" } }).catch(() => null);
+  const logoUrl = esc(logoSetting?.value || "https://static.showit.co/1200/DCkf9Lq274roW0gXPzSgJg/shared/ideas_logo-01.png");
 
   const balance = Math.max(0, inv.amount - inv.paid);
   const statusColor = STATUS_COLORS[inv.status] ?? "#6b7280";
@@ -72,7 +74,7 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Factura ${esc(inv.number)} — Ideas, LLC</title>
   <style>
-    *{box-sizing:border-box;margin:0;padding:0}
+    *{box-sizing:border-box;margin:0;padding:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}
     body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;color:#1a1a2e;background:#fff;font-size:14px;line-height:1.55}
     .page{max-width:760px;margin:0 auto;padding:0 0 40px}
     .header{display:flex;justify-content:space-between;align-items:center;background:#111827;padding:28px 48px;margin-bottom:36px;border-radius:0}
@@ -119,7 +121,7 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
 
   <div class="header">
     <div class="brand">
-      <img src="https://static.showit.co/1200/DCkf9Lq274roW0gXPzSgJg/shared/ideas_logo-01.png" alt="Ideas, LLC">
+      <img src="${logoUrl}" alt="Ideas, LLC">
       <p>Impresión &amp; Rotulación · Puerto Rico</p>
     </div>
     <div class="inv-info">
@@ -168,7 +170,7 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
     </div>
   </div>
 
-  ${inv.notes && inv.order ? `<div class="notes"><h4>Notas</h4><p>${esc(inv.notes)}</p></div>` : ""}
+  ${inv.notes ? `<div class="notes"><h4>Notas</h4><p>${esc(inv.notes)}</p></div>` : ""}
 
   <div class="footer">
     Gracias por su preferencia · <strong>IDEAS, LLC</strong> · ideas@printingideaspr.com<br>

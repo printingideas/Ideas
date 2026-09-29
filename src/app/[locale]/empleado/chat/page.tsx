@@ -7,24 +7,29 @@ export default async function EmpleadoChatPage({
 }: {
   params: Promise<{ locale: string }>;
 }) {
-  const { locale } = await params;
-  const user = await requireRole(["employee"], locale);
+  const user = await requireRole(["employee"]);
 
-  const allUsers = await prisma.user.findMany({
+  const [currentUserDb, allUsers] = await Promise.all([
+    prisma.user.findUnique({
+      where: { id: user.id! },
+      select: { avatar: true },
+    }),
+    prisma.user.findMany({
     where: { role: { in: ["admin", "employee"] }, active: true },
     select: { id: true, name: true, avatar: true, role: true, company: true },
     orderBy: { name: "asc" },
-  });
+  }),
+  ]);
 
   return (
     <div>
       <h1 className="heading-lg mb-6">Chat interno</h1>
       <ChatShell
         currentUser={{
-          id: user.id,
+          id: user.id!,
           name: user.name ?? null,
-          avatar: user.avatar ?? null,
-          role: user.role,
+          avatar: currentUserDb?.avatar ?? null,
+          role: user.role!,
         }}
         allUsers={allUsers.map((u) => ({
           id: u.id,

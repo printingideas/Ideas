@@ -14,14 +14,14 @@ export const ctaBandDefaults: Record<string, unknown> = {
   subtitleColor: "rgba(10,20,34,0.75)",
   alignment: "center",
   btnText: "Cotizar ahora",
-  btnUrl: "/es/cotizacion",
+  btnUrl: "/cotizacion",
   btnBg: "#0a1422",
   btnColor: "#ffffff",
   btn2Text: "Ver servicios",
-  btn2Url: "/es/servicios",
+  btn2Url: "/servicios",
 };
 
-export function CtaBandBlock(props: Record<string, unknown>) {
+export function CtaBandBlock(props: Record<string, any>) {
   const alignment = (props.alignment as string) || "center";
 
   return (
@@ -77,6 +77,8 @@ export function CtaBandSettings({
         <SelectField value={(props.alignment as string) || "center"} onChange={(v) => onChange({ alignment: v })}
           options={[{ value: "center", label: "Centro" }, { value: "left", label: "Izquierda" }]} />
       </Field>
+      <SectionTitle>Espaciado</SectionTitle>
+      <SpacingSettings props={props} onChange={onChange} />
       <SectionTitle>Botón principal</SectionTitle>
       <Field label="Texto"><TextField value={(props.btnText as string) || ""} onChange={(v) => onChange({ btnText: v })} /></Field>
       <Field label="URL"><UrlField value={(props.btnUrl as string) || ""} onChange={(v) => onChange({ btnUrl: v })} /></Field>
@@ -87,8 +89,6 @@ export function CtaBandSettings({
       <Field label="URL"><UrlField value={(props.btn2Url as string) || ""} onChange={(v) => onChange({ btn2Url: v })} /></Field>
       <SectionTitle>Fondo</SectionTitle>
       <BgSettings props={props} onChange={onChange} />
-      <SectionTitle>Espaciado</SectionTitle>
-      <SpacingSettings props={props} onChange={onChange} />
     </div>
   );
 }

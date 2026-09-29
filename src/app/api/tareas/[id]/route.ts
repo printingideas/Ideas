@@ -1,9 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { auth } from "@/auth";
+import { sendTaskAssignedEmail } from "@/lib/mailer";
+import {
+  enforceTaskCompletionRules,
+  safeStringArray,
+  enforceColumnChecklistGate,
+  resolveColumnOwners,
+  copyColumnChecklistTemplates,
+} from "@/lib/workflow";
 
 const ALLOWED_FIELDS = [
-  "status", "priority", "title", "description", "assigneeId", "hours", "dueDate", "position", "coverImage", "attachments", "members"
+  "status", "priority", "title", "description", "assigneeId", "hours", "dueDate", "position", "coverImage", "attachments", "members", "orderId"
 ] as const;
 
 export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
@@ -38,11 +46,48 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
       data[key] = v;
     }
   }
+  // Fetch the previous task so we can compute a diff for the activity log
+  // and enforce the "regla de oro" before allowing completion.
+  const before = await prisma.task.findUnique({ where: { id } });
+  if (!before) {
+    return NextResponse.json({ error: "not_found" }, { status: 404 });
+  }
+
+  const isColumnMove = "status" in data && data.status !== before.status;
+
+  // Checklist automático por columna: no se puede avanzar de columna mientras
+  // queden items pendientes del checklist auto-generado de la columna actual.
+  if (isColumnMove) {
+    const gate = await enforceColumnChecklistGate(id, before.status);
+    if (gate) return gate;
+  }
+
+  // Regla de oro: una tarea no puede marcarse "done" sin evidencia (foto),
+  // sin el checklist completo, y —si pertenece a un proyecto— sin aprobación.
+  if ("status" in data && data.status === "done" && before.status !== "done") {
+    const guard = await enforceTaskCompletionRules(id, before);
+    if (guard) return guard;
+  }
+
   if ("status" in data && data.status === "done") data.completedAt = new Date();
 
-  // Fetch the previous task so we can compute a diff for the activity log.
-  const before = await prisma.task.findUnique({ where: { id } });
+  // Responsable por columna: al entrar a una columna con responsables por
+  // defecto configurados, se reemplaza el asignado actual por ellos.
+  if (isColumnMove) {
+    const owners = await resolveColumnOwners(data.status as string);
+    if (owners.assigneeId) {
+      data.assigneeId = owners.assigneeId;
+      data.members = JSON.stringify(owners.memberIds);
+    }
+  }
+
   const task = await prisma.task.update({ where: { id }, data });
+
+  // Copiar el checklist de la nueva columna (idempotente).
+  let checklistAdded = 0;
+  if (isColumnMove) {
+    checklistAdded = await copyColumnChecklistTemplates(id, task.status);
+  }
 
   // Log activity entries for human-meaningful changes only. Skip noise like
   // pure position reorders (Trello shows those silently too).
@@ -64,16 +109,16 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
       events.push({ type: "due_changed", data: { from: before.dueDate, to: task.dueDate } });
     }
     if ("members" in data && (before.members ?? null) !== (task.members ?? null)) {
-      const prev: string[] = safeArr(before.members);
-      const next: string[] = safeArr(task.members);
+      const prev: string[] = safeStringArray(before.members);
+      const next: string[] = safeStringArray(task.members);
       const added = next.filter((x) => !prev.includes(x));
       const removed = prev.filter((x) => !next.includes(x));
       if (added.length) events.push({ type: "members_added", data: { ids: added } });
       if (removed.length) events.push({ type: "members_removed", data: { ids: removed } });
     }
     if ("attachments" in data && (before.attachments ?? null) !== (task.attachments ?? null)) {
-      const prev: string[] = safeArr(before.attachments);
-      const next: string[] = safeArr(task.attachments);
+      const prev: string[] = safeStringArray(before.attachments);
+      const next: string[] = safeStringArray(task.attachments);
       const added = next.filter((x) => !prev.includes(x));
       const removed = prev.filter((x) => !next.includes(x));
       if (added.length) events.push({ type: "attachments_added", data: { urls: added } });
@@ -81,6 +126,9 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     }
     if ("coverImage" in data && (before.coverImage ?? null) !== (task.coverImage ?? null)) {
       events.push({ type: "cover_changed", data: { from: before.coverImage, to: task.coverImage } });
+    }
+    if (checklistAdded > 0) {
+      events.push({ type: "checklist_auto_generated", data: { count: checklistAdded, column: task.status } });
     }
     if (events.length) {
       await prisma.taskActivity.createMany({
@@ -92,19 +140,32 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
         }))
       });
     }
+
+    // Send assignment notification (fire-and-forget, never fail the request)
+    if (
+      "assigneeId" in data &&
+      task.assigneeId &&
+      task.assigneeId !== before.assigneeId &&
+      task.assigneeId !== actorId
+    ) {
+      prisma.user
+        .findUnique({ where: { id: task.assigneeId }, select: { email: true, name: true } })
+        .then((u) => {
+          if (!u) return;
+          const actor = (session!.user as { name?: string | null }).name ?? "Alguien";
+          return sendTaskAssignedEmail({
+            toEmail: u.email,
+            toName: u.name ?? u.email,
+            taskTitle: task.title,
+            taskId: id,
+            assignedByName: actor,
+          });
+        })
+        .catch(() => null);
+    }
   }
 
   return NextResponse.json(task);
-}
-
-function safeArr(raw: string | null): string[] {
-  if (!raw) return [];
-  try {
-    const v = JSON.parse(raw);
-    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
-  } catch {
-    return [];
-  }
 }
 
 export async function DELETE(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {

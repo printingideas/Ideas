@@ -1,7 +1,4 @@
 import { NextIntlClientProvider } from "next-intl";
-import { setRequestLocale } from "next-intl/server";
-import { notFound } from "next/navigation";
-import { locales } from "@/i18n/request";
 import { Navbar } from "@/components/Navbar";
 import { Footer } from "@/components/Footer";
 import { WhatsAppButton } from "@/components/WhatsAppButton";
@@ -10,46 +7,61 @@ import { PublicChrome } from "@/components/PublicChrome";
 import { prisma } from "@/lib/prisma";
 
 export function generateStaticParams() {
-  return locales.map((locale) => ({ locale }));
+  return [{ locale: "es" }];
 }
 
 export default async function LocaleLayout({
   children,
-  params
 }: {
   children: React.ReactNode;
   params: Promise<{ locale: string }>;
 }) {
-  const { locale } = await params;
-  if (!(locales as readonly string[]).includes(locale)) notFound();
-  setRequestLocale(locale);
 
-  const [messages, whatsappRow] = await Promise.all([
-    import(`../../../messages/${locale}.json`).then((m) => m.default),
-    prisma.siteSetting.findUnique({ where: { key: "whatsapp" } }),
+  let whatsappRow = null;
+  let footerRows: { key: string; value: string }[] = [];
+  try {
+    [whatsappRow, footerRows] = await Promise.all([
+      prisma.siteSetting.findUnique({ where: { key: "whatsapp" } }),
+      prisma.siteSetting.findMany({
+        where: { key: { in: [
+          "footer_description",
+          "logo_url",
+          "footer_member_1_href", "footer_member_1_label", "footer_member_1_logo",
+          "footer_member_2_href", "footer_member_2_label", "footer_member_2_logo",
+          "footer_member_3_href", "footer_member_3_label", "footer_member_3_logo",
+        ] } },
+      }),
+    ]);
+  } catch {
+    // DB unavailable — use defaults
+  }
+  const [messages] = await Promise.all([
+    import("../../../messages/es.json").then((m) => m.default),
   ]);
   const whatsapp = whatsappRow?.value ?? "19393264007";
 
+  const fs: Record<string, string> = {};
+  for (const r of footerRows) fs[r.key] = r.value;
+
+  const footerDescription = fs.footer_description || undefined;
+  const logoUrl = fs.logo_url || undefined;
+  const footerMembers = [1, 2, 3]
+    .map((n) => ({
+      href:  fs[`footer_member_${n}_href`]  ?? "",
+      label: fs[`footer_member_${n}_label`] ?? "",
+      logo:  fs[`footer_member_${n}_logo`]  ?? "",
+    }))
+    .filter((m) => m.logo);
+  const resolvedMembers = footerMembers.length > 0 ? footerMembers : undefined;
+
   return (
-    <html lang={locale} suppressHydrationWarning>
-      <head>
-        {/* Block BitDefender / similar extension-injected attributes before React hydration to avoid noisy hydration mismatch warnings. */}
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `(function(){try{var BLOCK=['bis_skin_checked','bis_register','bis_use','data-bis-config','data-dynamic-id'];function isBlocked(n){if(!n)return false;n=String(n);if(BLOCK.indexOf(n)>-1)return true;if(n.indexOf('__processed_')===0)return true;if(n.indexOf('bis_')===0)return true;return false;}var origSet=Element.prototype.setAttribute;Element.prototype.setAttribute=function(name,value){if(isBlocked(name))return;return origSet.call(this,name,value);};var origSetNS=Element.prototype.setAttributeNS;Element.prototype.setAttributeNS=function(ns,name,value){if(isBlocked(name))return;return origSetNS.call(this,ns,name,value);};function strip(n){if(!n||n.nodeType!==1)return;var atts=n.attributes;if(!atts)return;for(var i=atts.length-1;i>=0;i--){var a=atts[i];if(a&&isBlocked(a.name)){try{n.removeAttribute(a.name);}catch(e){}}}}var mo=new MutationObserver(function(muts){for(var i=0;i<muts.length;i++){var m=muts[i];if(m.type==='attributes'&&m.target&&isBlocked(m.attributeName)){try{m.target.removeAttribute(m.attributeName);}catch(e){}}else if(m.type==='childList'&&m.addedNodes){m.addedNodes.forEach(function(x){strip(x);if(x.querySelectorAll)x.querySelectorAll('*').forEach(strip);});}}});try{mo.observe(document.documentElement,{attributes:true,subtree:true,childList:true});}catch(e){}document.addEventListener('DOMContentLoaded',function(){try{document.querySelectorAll('*').forEach(strip);}catch(e){}});}catch(e){}})();`
-          }}
-        />
-      </head>
-      <body suppressHydrationWarning>
-        <NextIntlClientProvider locale={locale} messages={messages}>
-          <Providers>
-            <PublicChrome><Navbar whatsapp={whatsapp} /></PublicChrome>
-            <main>{children}</main>
-            <PublicChrome><Footer whatsapp={whatsapp} /></PublicChrome>
-            <WhatsAppButton whatsapp={whatsapp} />
-          </Providers>
-        </NextIntlClientProvider>
-      </body>
-    </html>
+    <NextIntlClientProvider locale="es" messages={messages}>
+      <Providers>
+        <PublicChrome><Navbar whatsapp={whatsapp} logoUrl={logoUrl} /></PublicChrome>
+        <main>{children}</main>
+        <PublicChrome><Footer whatsapp={whatsapp} logoUrl={logoUrl} description={footerDescription} members={resolvedMembers} /></PublicChrome>
+        <PublicChrome><WhatsAppButton whatsapp={whatsapp} /></PublicChrome>
+      </Providers>
+    </NextIntlClientProvider>
   );
 }

@@ -9,17 +9,22 @@ export async function GET() {
   const { id: userId } = session.user as { id: string };
 
   const memberships = await prisma.chatRoomMember.findMany({ where: { userId } });
+  if (memberships.length === 0) return NextResponse.json({ count: 0 });
+
+  const lastReadMap = new Map(memberships.map((m) => [m.roomId, m.lastReadAt ?? new Date(0)]));
+
+  // Fetch all potentially-unread messages in a single query and filter in-memory
+  // to avoid the N+1 anti-pattern (one count query per room).
+  const roomIds = memberships.map((m) => m.roomId);
+  const msgs = await prisma.chatMessage.findMany({
+    where: { roomId: { in: roomIds }, authorId: { not: userId } },
+    select: { roomId: true, createdAt: true },
+  });
 
   let total = 0;
-  for (const m of memberships) {
-    const count = await prisma.chatMessage.count({
-      where: {
-        roomId: m.roomId,
-        createdAt: { gt: m.lastReadAt ?? new Date(0) },
-        authorId: { not: userId },
-      },
-    });
-    total += count;
+  for (const msg of msgs) {
+    const since = lastReadMap.get(msg.roomId) ?? new Date(0);
+    if (msg.createdAt > since) total++;
   }
 
   return NextResponse.json({ count: total });

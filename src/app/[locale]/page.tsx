@@ -5,20 +5,42 @@ import { ProjectsShowcase } from "@/components/ProjectsShowcase";
 import { CtaBand } from "@/components/CtaBand";
 import { ClientsLogos } from "@/components/ClientsLogos";
 import { prisma } from "@/lib/prisma";
+import { unstable_cache } from "next/cache";
 import { mergeConfig } from "@/lib/site-config";
 import { LandingRenderer } from "@/components/landing-builder/LandingRenderer";
 import type { LandingBlock } from "@/components/landing-builder/types";
 
-// Always read fresh from DB so landing editor changes appear immediately
-export const dynamic = "force-dynamic";
+// Revalidate at most once per 60s; landing editor can call revalidateTag("home") to bust.
+export const revalidate = 60;
+
+const getHomeData = unstable_cache(
+  async () => {
+    const [services, projects, settingRows, employees] = await Promise.all([
+      prisma.service.findMany({ where: { active: true }, orderBy: { order: "asc" }, take: 6 }),
+      prisma.project.findMany({ where: { featured: true }, orderBy: { createdAt: "desc" }, take: 6 }),
+      prisma.siteSetting.findMany(),
+      prisma.user.findMany({ where: { role: "employee" }, select: { id: true, name: true, avatar: true } }),
+    ]);
+    return { services, projects, settingRows, employees };
+  },
+  ["home-data"],
+  { revalidate: 60, tags: ["home"] },
+);
 
 export default async function HomePage() {
-  const [services, projects, settingRows, employees] = await Promise.all([
-    prisma.service.findMany({ where: { active: true }, orderBy: { order: "asc" }, take: 6 }),
-    prisma.project.findMany({ where: { featured: true }, orderBy: { createdAt: "desc" }, take: 6 }),
-    prisma.siteSetting.findMany(),
-    prisma.user.findMany({ where: { role: "employee" }, select: { id: true, name: true, avatar: true } }),
-  ]);
+  let services: Awaited<ReturnType<typeof prisma.service.findMany>> = [];
+  let projects: Awaited<ReturnType<typeof prisma.project.findMany>> = [];
+  let settingRows: Awaited<ReturnType<typeof prisma.siteSetting.findMany>> = [];
+  let employees: { id: string; name: string | null; avatar: string | null }[] = [];
+  try {
+    const data = await getHomeData();
+    services = data.services;
+    projects = data.projects;
+    settingRows = data.settingRows;
+    employees = data.employees;
+  } catch {
+    // DB unavailable — render with empty defaults
+  }
 
   const config = mergeConfig(settingRows);
 
@@ -49,7 +71,7 @@ export default async function HomePage() {
       <Stats config={config} />
       <ClientsLogos config={config} />
       <ServicesGrid services={services} config={config} />
-      <ProjectsShowcase projects={projects} config={config} />
+      <ProjectsShowcase projects={projects} config={config} logoUrl={settingRows.find((row) => row.key === "logo_url")?.value} />
       <CtaBand config={config} />
     </>
   );

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
+import { revalidateTag } from "next/cache";
 import { z } from "zod";
 
 const ProjectSchema = z.object({
@@ -22,8 +23,10 @@ export async function GET() {
 
 export async function POST(req: Request) {
   const session = await auth();
-  if (!session?.user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  const role = (session?.user as { role?: string } | undefined)?.role;
+  if (role !== "admin") return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   const data = ProjectSchema.parse(await req.json());
   const created = await prisma.project.create({ data });
+  revalidateTag("home");
   return NextResponse.json(created);
 }

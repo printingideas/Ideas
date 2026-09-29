@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Save, CheckCircle, Globe, Phone, Share2, Search, FileText, Palette } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { Save, CheckCircle, Globe, Phone, Share2, Search, FileText, Palette, Upload, X, LayoutTemplate } from "lucide-react";
 
 // ─── Default values ───────────────────────────────────────────────────────────
 const DEFAULTS: Record<string, string> = {
@@ -11,6 +12,12 @@ const DEFAULTS: Record<string, string> = {
   tagline_en: "Printing & Signage · Puerto Rico",
   logo_url: "https://static.showit.co/1200/DCkf9Lq274roW0gXPzSgJg/shared/ideas_logo-01.png",
   favicon_url: "",
+  theme_primary: "#ffae00",
+  theme_background: "#060b14",
+  theme_surface: "#0e1a2c",
+  theme_accent: "#e11d2a",
+  theme_font: "modern",
+  theme_radius: "14",
   // Contact
   contact_email: "",
   contact_phone: "",
@@ -25,21 +32,30 @@ const DEFAULTS: Record<string, string> = {
   social_youtube: "",
   social_tiktok: "",
   // SEO
-  meta_title_es: "Ideas, LLC — Impresión y rotulación en Puerto Rico",
-  meta_title_en: "Ideas, LLC — Printing & Signage in Puerto Rico",
-  meta_description_es: "",
-  meta_description_en: "",
-  meta_keywords_es: "",
-  meta_keywords_en: "",
+  meta_title: "Ideas, LLC — Impresión y rotulación en Puerto Rico",
+  meta_description: "Más de 8,500 pies cuadrados de espacio para ofrecer impresiones y rotulación de primera. Manufactura, instalación, rotulación e impresión digital.",
+  meta_keywords: "impresión gran formato, rotulación, rótulos, vinilos, letreros, señalización, imprenta Puerto Rico, printing Puerto Rico",
+  meta_og_image: "",
   // Quotes
   quote_validity_days: "30",
   quote_terms_es: "50% al firmar la propuesta, 50% al completar el trabajo.",
   quote_terms_en: "50% upon signing the proposal, 50% upon project completion.",
   quote_footer_es: "Gracias por confiar en Ideas, LLC.",
   quote_footer_en: "Thank you for choosing Ideas, LLC.",
+  // Footer
+  footer_description: "Impresión y rotulación de gran formato en Puerto Rico. Empresa puertorriqueña dedicada a la manufactura de rótulos e impresiones de alto volumen.",
+  footer_member_1_href: "https://asociacion.hechoen.pr/quienes-somos/",
+  footer_member_1_label: "Hecho en PR",
+  footer_member_1_logo: "/logos/hecho-en-pr.svg",
+  footer_member_2_href: "https://www.midapr.com/",
+  footer_member_2_label: "MIDA",
+  footer_member_2_logo: "/logos/mida.png",
+  footer_member_3_href: "https://www.smepr.org/",
+  footer_member_3_label: "SME PR",
+  footer_member_3_logo: "/logos/sme-pr.svg",
 };
 
-type Tab = "general" | "contacto" | "redes" | "seo" | "cotizaciones";
+type Tab = "general" | "contacto" | "redes" | "seo" | "cotizaciones" | "footer";
 
 const TABS: { key: Tab; label: string; icon: React.ReactNode }[] = [
   { key: "general",     label: "General",       icon: <Globe size={15} /> },
@@ -47,6 +63,7 @@ const TABS: { key: Tab; label: string; icon: React.ReactNode }[] = [
   { key: "redes",       label: "Redes Sociales",icon: <Share2 size={15} /> },
   { key: "seo",         label: "SEO",           icon: <Search size={15} /> },
   { key: "cotizaciones",label: "Cotizaciones",  icon: <FileText size={15} /> },
+  { key: "footer",      label: "Footer",        icon: <LayoutTemplate size={15} /> },
 ];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -68,11 +85,14 @@ function Row({ children }: { children: React.ReactNode }) {
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 export default function SettingsPage() {
+  const router = useRouter();
   const [values, setValues] = useState<Record<string, string>>(DEFAULTS);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [tab, setTab] = useState<Tab>("general");
+  const [uploading, setUploading] = useState<Record<string, boolean>>({});
+  const [saveError, setSaveError] = useState("");
 
   useEffect(() => {
     fetch("/api/settings")
@@ -87,16 +107,62 @@ export default function SettingsPage() {
     setValues((prev) => ({ ...prev, [key]: value }));
   }
 
+  async function uploadImg(key: string, file: File) {
+    setUploading((prev) => ({ ...prev, [key]: true }));
+    const fd = new FormData();
+    fd.append("file", file);
+    const r = await fetch("/api/upload", { method: "POST", body: fd });
+    const j = await r.json();
+    setUploading((prev) => ({ ...prev, [key]: false }));
+    if (j.url) set(key, j.url);
+  }
+
+  const imgField = (key: string) => (
+    <div className="flex items-center gap-3">
+      {values[key] && (
+        <div className="relative group/prev shrink-0">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={values[key]} alt="preview" className="h-12 w-12 rounded-lg object-contain border border-white/10 bg-white/5" />
+          <button
+            type="button"
+            onClick={() => set(key, "")}
+            className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-red-500 text-white flex items-center justify-center opacity-0 group-hover/prev:opacity-100 transition-opacity"
+          >
+            <X size={10} />
+          </button>
+        </div>
+      )}
+      <label className={`btn btn-outline text-sm cursor-pointer flex items-center gap-2 ${uploading[key] ? "opacity-50 pointer-events-none" : ""}`}>
+        <Upload size={14} />
+        {uploading[key] ? "Subiendo..." : values[key] ? "Cambiar imagen" : "Subir imagen"}
+        <input
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={(e) => e.target.files?.[0] && uploadImg(key, e.target.files[0])}
+        />
+      </label>
+    </div>
+  );
+
   async function save() {
     setSaving(true);
-    await fetch("/api/settings", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(values),
-    });
-    setSaving(false);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2500);
+    setSaveError("");
+    try {
+      const response = await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(values),
+      });
+      if (!response.ok) throw new Error("Settings save failed");
+      setSaved(true);
+      router.refresh();
+      setTimeout(() => setSaved(false), 2500);
+    } catch {
+      setSaveError("No se pudieron guardar los cambios.");
+    } finally {
+      setSaving(false);
+    }
   }
 
   const inp = (key: string, placeholder?: string) => (
@@ -118,6 +184,21 @@ export default function SettingsPage() {
     />
   );
 
+  const colorInp = (key: string, label: string) => (
+    <div className="flex items-center gap-3">
+      <input
+        type="color"
+        aria-label={label}
+        className="h-11 w-14 cursor-pointer rounded-lg border border-white/15 bg-white/5 p-1"
+        value={/^#[0-9a-f]{6}$/i.test(values[key] ?? "") ? values[key] : DEFAULTS[key]}
+        onChange={(e) => set(key, e.target.value)}
+      />
+      <span className="font-mono text-xs uppercase text-white/60">{values[key]}</span>
+    </div>
+  );
+
+  const themeRadius = Math.max(0, Math.min(24, Number(values.theme_radius) || 0));
+
   return (
     <div className="space-y-6 max-w-3xl">
       {/* Header */}
@@ -135,9 +216,10 @@ export default function SettingsPage() {
           {saved ? "Guardado" : saving ? "Guardando..." : "Guardar cambios"}
         </button>
       </div>
+      {saveError && <p role="alert" className="text-sm text-red-400">{saveError}</p>}
 
       {/* Tab bar */}
-      <div className="flex gap-1 bg-white/5 rounded-xl p-1 border border-white/10 overflow-x-auto">
+      <div className="flex gap-1 bg-white/5 rounded-xl p-1 border border-white/10 overflow-x-auto no-scrollbar">
         {TABS.map((t) => (
           <button
             key={t.key}
@@ -174,19 +256,68 @@ export default function SettingsPage() {
                   {inp("tagline_en", "Printing & Signage · Puerto Rico")}
                 </Field>
               </Row>
-              <Field label="URL del logotipo" hint="Enlace directo a la imagen del logo (CDN, S3, etc.)">
-                {inp("logo_url", "https://...")}
+              <Field label="Logotipo">
+                {imgField("logo_url")}
               </Field>
-              {values.logo_url && (
-                <div className="flex items-center gap-3 p-3 rounded-xl bg-white/5 border border-white/10">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={values.logo_url} alt="Logo preview" className="h-10 object-contain" />
-                  <span className="text-xs text-white/40">Vista previa</span>
+              <Field label="Favicon" hint="Imagen cuadrada de al menos 32×32 px">
+                {imgField("favicon_url")}
+              </Field>
+
+              <div className="border-t border-white/10 pt-5 space-y-4">
+                <SectionTitle icon={<Palette size={16} />} title="Apariencia global" />
+                <Row>
+                  <Field label="Color principal" hint="Botones, enlaces y elementos destacados.">
+                    {colorInp("theme_primary", "Color principal")}
+                  </Field>
+                  <Field label="Fondo de la web">
+                    {colorInp("theme_background", "Fondo de la web")}
+                  </Field>
+                </Row>
+                <Row>
+                  <Field label="Superficie de paneles y campos">
+                    {colorInp("theme_surface", "Superficie")}
+                  </Field>
+                  <Field label="Color de acento">
+                    {colorInp("theme_accent", "Color de acento")}
+                  </Field>
+                </Row>
+                <Row>
+                  <Field label="Tipografía">
+                    <select className="select w-full" value={values.theme_font} onChange={(e) => set("theme_font", e.target.value)}>
+                      <option value="modern">Moderna</option>
+                      <option value="condensed">Adelle Condensed</option>
+                      <option value="editorial">Editorial</option>
+                    </select>
+                  </Field>
+                  <Field label={`Redondeo global: ${themeRadius}px`}>
+                    <input
+                      type="range"
+                      min="0"
+                      max="24"
+                      step="2"
+                      value={themeRadius}
+                      onChange={(e) => set("theme_radius", e.target.value)}
+                      className="w-full accent-[var(--color-brand-500)]"
+                    />
+                  </Field>
+                </Row>
+                <div
+                  className="flex items-center justify-between gap-4 border border-white/10 p-4"
+                  style={{ backgroundColor: values.theme_background, borderRadius: `${themeRadius}px` }}
+                >
+                  <div>
+                    <p className="text-sm font-semibold text-white">Vista previa</p>
+                    <p className="text-xs text-white/60">Así se verá el color principal.</p>
+                  </div>
+                  <span
+                    className="px-4 py-2 text-sm font-bold text-[#0a1422]"
+                    style={{ backgroundColor: values.theme_primary, borderRadius: `${themeRadius}px` }}
+                  >
+                    Botón principal
+                  </span>
                 </div>
-              )}
-              <Field label="URL del favicon" hint="Imagen cuadrada de al menos 32×32 px">
-                {inp("favicon_url", "https://...")}
-              </Field>
+                <p className="text-[11px] text-white/40">Los cambios se aplican a todo el sitio al guardar. Usa fondos oscuros para conservar el contraste actual.</p>
+              </div>
             </>
           )}
 
@@ -241,30 +372,57 @@ export default function SettingsPage() {
           {tab === "seo" && (
             <>
               <SectionTitle icon={<Search size={16} />} title="SEO y metadatos" />
-              <Row>
-                <Field label="Meta título (español)">
-                  {inp("meta_title_es")}
-                </Field>
-                <Field label="Meta título (inglés)">
-                  {inp("meta_title_en")}
-                </Field>
-              </Row>
-              <Row>
-                <Field label="Meta descripción (español)" hint="Recomendado: 150–160 caracteres">
-                  {ta("meta_description_es", 3)}
-                </Field>
-                <Field label="Meta descripción (inglés)" hint="Recommended: 150–160 characters">
-                  {ta("meta_description_en", 3)}
-                </Field>
-              </Row>
-              <Row>
-                <Field label="Keywords (español)" hint="Separados por coma">
-                  {inp("meta_keywords_es", "rótulos, impresión, viniles...")}
-                </Field>
-                <Field label="Keywords (inglés)" hint="Separated by comma">
-                  {inp("meta_keywords_en", "signs, printing, vinyl...")}
-                </Field>
-              </Row>
+              <Field
+                label="Meta título"
+                hint={`Aparece en la pestaña del navegador y en Google. Recomendado: hasta 60 caracteres (${(values.meta_title ?? "").length}/60)`}
+              >
+                {inp("meta_title", "Ideas, LLC — Impresión y rotulación en Puerto Rico")}
+              </Field>
+              <Field
+                label="Meta descripción"
+                hint={`Texto que Google muestra bajo el título. Recomendado: 150–160 caracteres (${(values.meta_description ?? "").length}/160)`}
+              >
+                {ta("meta_description", 3, "Describe brevemente qué hace la empresa y dónde está ubicada.")}
+              </Field>
+              <Field label="Keywords" hint="Palabras clave separadas por coma">
+                {inp("meta_keywords", "rótulos, impresión, viniles...")}
+              </Field>
+              <Field
+                label="Imagen para compartir (Open Graph)"
+                hint="Se muestra al compartir el sitio en redes sociales o WhatsApp. Recomendado: 1200×630 px."
+              >
+                {imgField("meta_og_image")}
+              </Field>
+            </>
+          )}
+
+          {/* ── Footer ── */}
+          {tab === "footer" && (
+            <>
+              <SectionTitle icon={<LayoutTemplate size={16} />} title="Contenido del footer" />
+              <Field label="Descripción bajo el logo">
+                {ta("footer_description", 3, "Texto que aparece bajo el logotipo en el footer")}
+              </Field>
+
+              <SectionTitle icon={<LayoutTemplate size={16} />} title="Membresías / Asociaciones" />
+              <p className="text-xs text-white/40 -mt-4">Configura hasta 3 insignias de asociaciones que aparecen en el footer.</p>
+
+              {([1, 2, 3] as const).map((n) => (
+                <div key={n} className="rounded-xl border border-white/10 bg-white/[0.03] p-4 space-y-3">
+                  <p className="text-xs font-semibold text-white/50 uppercase tracking-widest">Membresía {n}</p>
+                  <Row>
+                    <Field label="Nombre / Alt">
+                      {inp(`footer_member_${n}_label`, "Nombre de la asociación")}
+                    </Field>
+                    <Field label="Enlace (href)">
+                      {inp(`footer_member_${n}_href`, "https://...")}
+                    </Field>
+                  </Row>
+                  <Field label="Logo" hint="Sube un PNG, SVG o JPG. Déjalo vacío para ocultar esta membresía.">
+                    {imgField(`footer_member_${n}_logo`)}
+                  </Field>
+                </div>
+              ))}
             </>
           )}
 

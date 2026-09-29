@@ -3,10 +3,20 @@ import { auth } from "@/auth";
 import { ClientTaskView } from "@/components/portal/ClientTaskView";
 
 const STATUS_ORDER: Record<string, number> = {
-  in_progress: 0,
-  todo: 1,
-  blocked: 2,
-  done: 3,
+  pendientes:    0,
+  espera:        1,
+  arte:          2,
+  produccion:    3,
+  terminaciones: 4,
+  instalacion:   5,
+  facturar:      6,
+  cerrado:       7,
+  // legacy fallbacks
+  in_progress: 1,
+  review:      2,
+  todo:        0,
+  blocked:     1,
+  done:        7,
 };
 
 export default async function ClienteTareas() {
@@ -18,9 +28,16 @@ export default async function ClienteTareas() {
       OR: [
         { assigneeId: userId },
         { members: { contains: userId } },
+        { taskMembers: { some: { userId } } },
       ]
     },
     orderBy: [{ dueDate: "asc" }, { createdAt: "desc" }],
+    include: {
+      checklistItems: {
+        select: { id: true, text: true, done: true, position: true },
+        orderBy: { position: "asc" },
+      },
+    },
   });
 
   const tasks = [...raw]
@@ -35,10 +52,11 @@ export default async function ClienteTareas() {
       dueDate: t.dueDate ? t.dueDate.toISOString() : null,
       coverImage: t.coverImage ?? null,
       assigneeId: t.assigneeId ?? null,
+      checklist: t.checklistItems.map((c) => ({ id: c.id, text: c.text, done: c.done })),
     }));
 
-  const active = tasks.filter((t) => t.status !== "done");
-  const done   = tasks.filter((t) => t.status === "done");
+  const active = tasks.filter((t) => t.status !== "done" && t.status !== "cerrado");
+  const done   = tasks.filter((t) => t.status === "done" || t.status === "cerrado");
   const all    = [...active, ...done];
 
   return (

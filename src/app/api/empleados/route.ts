@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import bcrypt from "bcryptjs";
+import { logAudit } from "@/lib/audit";
 import { z } from "zod";
 
 async function requireAdmin() {
@@ -31,9 +32,20 @@ const CreateSchema = z.object({
 });
 
 export async function GET() {
-  const admin = await requireAdmin();
-  if (!admin) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-
+  const session = await auth();
+  const u = session?.user as { id?: string; role?: string } | undefined;
+  if (!u?.id || !["admin", "employee"].includes(u.role ?? "")) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
+  // Employees only get the fields needed for UI (name, avatar, role) — no sensitive data
+  if (u.role === "employee") {
+    const users = await prisma.user.findMany({
+      where: { active: true, role: { in: ["admin", "employee"] } },
+      orderBy: [{ role: "asc" }, { name: "asc" }],
+      select: { id: true, name: true, email: true, role: true, avatar: true, company: true },
+    });
+    return NextResponse.json(users);
+  }
   const users = await prisma.user.findMany({
     orderBy: [{ role: "asc" }, { name: "asc" }],
     select: userSelect,
@@ -64,6 +76,13 @@ export async function POST(req: NextRequest) {
   const user = await prisma.user.create({
     data: { ...data, password: hash },
     select: userSelect,
+  });
+  await logAudit({
+    actor: admin,
+    action: "create",
+    entity: "User",
+    entityId: user.id,
+    summary: `Creó la cuenta ${user.email} (${user.role})`,
   });
   return NextResponse.json(user, { status: 201 });
 }

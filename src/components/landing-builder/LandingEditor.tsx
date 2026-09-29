@@ -18,7 +18,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { GripVertical, Copy, Trash2, Plus, ChevronLeft, Monitor, Tablet, Smartphone, Save, Check, Loader2, Eye, X, LayoutGrid } from "lucide-react";
 import type { LandingBlock, BlockType } from "./types";
-import { BLOCK_REGISTRY, DEFAULT_BLOCKS, CATEGORY_LABELS } from "./registry";
+import { BLOCK_REGISTRY, DEFAULT_BLOCKS, PAGE_DEFAULTS, CATEGORY_LABELS } from "./registry";
 import { BgSettings, SpacingSettings, BorderSettings, ShadowSettings, FilterSettings, AccordionSection, ToggleField, Field, TextField, NumberField } from "./shared";
 
 // ── Viewport preview sizes ─────────────────────────────────────────────────
@@ -28,6 +28,21 @@ const VIEWPORTS = [
   { key: "mobile", label: "Móvil", icon: Smartphone, width: "390px" },
 ] as const;
 type ViewportKey = (typeof VIEWPORTS)[number]["key"];
+
+// Normaliza los bloques cargados: descarta entradas malformadas o de tipos que
+// ya no existen en el registro, para que datos corruptos no rompan el editor.
+function sanitizeBlocks(raw: unknown): LandingBlock[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((b): b is LandingBlock => {
+    if (!b || typeof b !== "object") return false;
+    const block = b as Partial<LandingBlock>;
+    return (
+      typeof block.id === "string" &&
+      typeof block.type === "string" &&
+      Boolean(BLOCK_REGISTRY[block.type as BlockType])
+    );
+  });
+}
 
 // ── Corner handle for selected blocks ────────────────────────────────────
 function CornerHandle({ pos }: { pos: "tl" | "tr" | "bl" | "br" }) {
@@ -476,8 +491,20 @@ function PaletteView({ onAdd }: { onAdd: (type: BlockType) => void }) {
 }
 
 // ── Main editor ────────────────────────────────────────────────────────────
-export function LandingEditor() {
+export function LandingEditor({ pageKey = "landingJson", pageLabel = "Landing" }: { pageKey?: string; pageLabel?: string }) {
+  const PAGE_URLS: Record<string, string> = {
+    landingJson: "/",
+    pageServiciosJson: "/servicios",
+    pageProyectosJson: "/proyectos",
+    pageNosotrosJson: "/nosotros",
+    pageTiendaJson: "/tienda",
+    pageProductoTemplateJson: "/tienda/stickers-full-color",
+    pageCotizacionJson: "/cotizacion",
+  };
+  const previewUrl = PAGE_URLS[pageKey] ?? "/";
+
   const [blocks, setBlocks] = useState<LandingBlock[]>([]);
+  const [loading, setLoading] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [focusedProp, setFocusedProp] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -487,8 +514,8 @@ export function LandingEditor() {
   const [services, setServices] = useState<unknown[]>([]);
   const [projects, setProjects] = useState<unknown[]>([]);
   const [employees, setEmployees] = useState<unknown[]>([]);
+  const [storeProducts, setStoreProducts] = useState<unknown[]>([]);
   const [previewMode, setPreviewMode] = useState(false);
-  const initialized = useRef(false);
   const canvasRef = useRef<HTMLElement>(null);
 
   // Scroll selected block into view whenever selection changes
@@ -498,25 +525,36 @@ export function LandingEditor() {
     el?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }, [selectedId]);
 
-  // Detect locale from URL so back link and preview link work correctly
-  const locale = typeof window !== "undefined" ? window.location.pathname.split("/")[1] || "es" : "es";
-
-  // Load blocks + data
+  // Load blocks for the current pageKey. Using AbortController so Strict Mode
+  // double-invocation and navigating between editor pages both work correctly.
   useEffect(() => {
-    if (initialized.current) return;
-    initialized.current = true;
+    const controller = new AbortController();
+    setLoading(true);
+    setSelectedId(null);
 
-    fetch("/api/landing")
+    fetch(`/api/landing?key=${encodeURIComponent(pageKey)}`, { signal: controller.signal })
       .then((r) => r.json())
       .then((data: { blocks: LandingBlock[] }) => {
-        setBlocks(data.blocks?.length ? data.blocks : DEFAULT_BLOCKS);
+        if (controller.signal.aborted) return;
+        const fallback = PAGE_DEFAULTS[pageKey] ?? [];
+        const clean = sanitizeBlocks(data.blocks);
+        setBlocks(clean.length ? clean : fallback);
       })
-      .catch(() => setBlocks(DEFAULT_BLOCKS));
+      .catch(() => {
+        if (controller.signal.aborted) return;
+        setBlocks(PAGE_DEFAULTS[pageKey] ?? []);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
 
-    fetch("/api/servicios").then((r) => r.json()).then((d) => setServices(d.services ?? d ?? [])).catch(() => {});
-    fetch("/api/proyectos").then((r) => r.json()).then((d) => setProjects(d.projects ?? d ?? [])).catch(() => {});
-    fetch("/api/empleados").then((r) => r.json()).then((d) => setEmployees(d.employees ?? d ?? [])).catch(() => {});
-  }, []);
+    fetch("/api/servicios", { signal: controller.signal }).then((r) => r.json()).then((d) => { if (!controller.signal.aborted) setServices(d.services ?? d ?? []); }).catch(() => {});
+    fetch("/api/proyectos", { signal: controller.signal }).then((r) => r.json()).then((d) => { if (!controller.signal.aborted) setProjects(d.projects ?? d ?? []); }).catch(() => {});
+    fetch("/api/empleados", { signal: controller.signal }).then((r) => r.json()).then((d) => { if (!controller.signal.aborted) setEmployees(d.employees ?? d ?? []); }).catch(() => {});
+    fetch("/api/tienda", { signal: controller.signal }).then((r) => r.json()).then((d) => { if (!controller.signal.aborted) setStoreProducts(Array.isArray(d) ? d : []); }).catch(() => {});
+
+    return () => controller.abort();
+  }, [pageKey]);
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
 
@@ -593,7 +631,7 @@ export function LandingEditor() {
       const res = await fetch("/api/landing", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ blocks }),
+        body: JSON.stringify({ blocks, key: pageKey }),
       });
       if (res.ok) {
         setSaved(true);
@@ -612,11 +650,11 @@ export function LandingEditor() {
     <div className="fixed inset-0 z-50 flex flex-col bg-[var(--color-ink-950)] text-white overflow-hidden">
       {/* ── Top bar ── */}
       <header className="flex items-center gap-3 px-4 py-3 border-b border-white/8 bg-black/40 backdrop-blur-sm shrink-0 z-20">
-        <a href={`/${locale}/admin`} className="flex items-center gap-1.5 text-white/40 hover:text-white text-xs transition-colors">
+        <a href="/admin" className="flex items-center gap-1.5 text-white/40 hover:text-white text-xs transition-colors">
           <ChevronLeft size={14} /> Admin
         </a>
         <span className="text-white/20">|</span>
-        <span className="font-bold text-sm">Editor de página</span>
+        <span className="font-bold text-sm">Editor · {pageLabel}</span>
         {dirty && <span className="text-xs text-[var(--color-brand-400)] animate-pulse">● Sin guardar</span>}
 
         {/* Viewport toggles */}
@@ -648,7 +686,7 @@ export function LandingEditor() {
         </button>
 
         <a
-          href={`/${locale}`}
+          href={previewUrl}
           target="_blank"
           rel="noreferrer"
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border border-white/10 text-white/50 hover:text-white transition-colors"
@@ -691,13 +729,50 @@ export function LandingEditor() {
             className="mx-auto transition-all duration-300"
             style={{ width: currentViewport.width, minHeight: "100%" }}
           >
-            {blocks.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-96 gap-4 text-white/20">
-                <p className="text-sm">No hay módulos. Agrega uno desde el panel izquierdo.</p>
+            {loading ? (
+              <div className="flex flex-col items-center justify-center h-96 gap-3 text-white/30">
+                <Loader2 size={24} className="animate-spin" />
+                <p className="text-sm">Cargando configuración…</p>
+              </div>
+            ) : blocks.length === 0 ? (
+              <div className="flex flex-col" style={{ minHeight: "100vh" }}>
+                {/* iframe of the real live page — pointer-events:none so editor interactions still work */}
+                <div className="relative" style={{ height: "100vh", minHeight: 600 }}>
+                  <iframe
+                    key={previewUrl}
+                    src={previewUrl}
+                    className="w-full border-0"
+                    style={{ height: "100%", pointerEvents: "none" }}
+                    title="Vista previa de la página"
+                  />
+                  {/* Transparent click-catcher to ensure no iframe interaction */}
+                  <div className="absolute inset-0" style={{ cursor: "default" }} />
+                </div>
+                {/* Overlay banner */}
+                <div className="sticky bottom-0 left-0 right-0 flex items-center justify-center gap-3 px-4 py-3 bg-ink-900/95 backdrop-blur border-t border-white/10 text-xs text-white/60">
+                  <LayoutGrid size={14} className="text-brand-400 shrink-0" />
+                  <span>Estás viendo la página actual. Agrega módulos desde el panel izquierdo para personalizarla — los módulos se mostrarán <strong className="text-white">en lugar</strong> del contenido estático.</span>
+                </div>
               </div>
             ) : previewMode ? (
               // ── Clean preview: no rings, no drag handles, full fidelity ──
               <div>
+                {/* Navbar simulation */}
+                <div className="sticky top-0 z-30 h-[80px] bg-ink-950/90 backdrop-blur border-b border-white/8 flex items-center px-6 gap-3 pointer-events-none select-none">
+                  <div className="w-24 h-6 rounded bg-white/10" />
+                  <div className="flex-1 flex gap-6 justify-center">
+                    {["Inicio","Servicios","Tienda","Nosotros"].map(l => <div key={l} className="w-14 h-4 rounded bg-white/8" />)}
+                  </div>
+                  <div className="w-20 h-8 rounded-full bg-brand-500/30" />
+                </div>
+                {/* Product section stub for template page */}
+                {pageKey === "pageProductoTemplateJson" && (
+                  <div className="flex items-center justify-center py-10 bg-white/3 border-b border-white/8 text-white/25 text-xs gap-2 select-none">
+                    <span>↑</span>
+                    <span>Aquí aparece la sección del producto (imagen, variantes, precio…)</span>
+                    <span>↑</span>
+                  </div>
+                )}
                 {blocks.map((block) => {
                   const meta = BLOCK_REGISTRY[block.type];
                   if (!meta) return null;
@@ -707,10 +782,29 @@ export function LandingEditor() {
                   if (block.type === "ServicesBlock") merged.services = services;
                   if (block.type === "ProjectsBlock") merged.projects = projects;
                   if (block.type === "TeamBlock") merged.employees = employees;
+                  if (block.type === "StoreProductsBlock") merged.storeProducts = storeProducts;
+                  if (block.type === "QuoteFormBlock") merged.__editorMode = true;
                   return <Comp key={block.id} {...merged} />;
                 })}
               </div>
             ) : (
+              <div>
+                {/* Navbar simulation bar — shows the ~80px fixed navbar space */}
+                <div className="sticky top-0 z-30 h-[80px] bg-ink-950/90 backdrop-blur border-b border-white/8 flex items-center px-6 gap-3 pointer-events-none select-none">
+                  <div className="w-24 h-6 rounded bg-white/10" />
+                  <div className="flex-1 flex gap-6 justify-center">
+                    {["Inicio","Servicios","Tienda","Nosotros"].map(l => <div key={l} className="w-14 h-4 rounded bg-white/8" />)}
+                  </div>
+                  <div className="w-20 h-8 rounded-full bg-brand-500/30" />
+                </div>
+                {/* Product section stub for template page */}
+                {pageKey === "pageProductoTemplateJson" && (
+                  <div className="flex items-center justify-center py-10 bg-white/3 border-b border-white/8 text-white/25 text-xs gap-2 select-none pointer-events-none">
+                    <span>↑</span>
+                    <span>Aquí aparece la sección del producto (imagen, variantes, precio…)</span>
+                    <span>↑</span>
+                  </div>
+                )}
               <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
                 <SortableContext items={blocks.map((b) => b.id)} strategy={verticalListSortingStrategy}>
                   {blocks.map((block) => {
@@ -730,6 +824,8 @@ export function LandingEditor() {
                     if (block.type === "ServicesBlock") mergedProps.services = services;
                     if (block.type === "ProjectsBlock") mergedProps.projects = projects;
                     if (block.type === "TeamBlock")     mergedProps.employees = employees;
+                    if (block.type === "StoreProductsBlock") mergedProps.storeProducts = storeProducts;
+                    if (block.type === "QuoteFormBlock") mergedProps.__editorMode = true;
                     return (
                       <SortableDragWrapper
                         key={block.id}
@@ -748,6 +844,7 @@ export function LandingEditor() {
                   })}
                 </SortableContext>
               </DndContext>
+              </div>
             )}
 
             {/* Add block button at bottom */}

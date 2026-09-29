@@ -1,4 +1,5 @@
 import type { BlockRegistry, LandingBlock, BlockType } from "./types";
+export { DEFAULT_BLOCKS, PAGE_DEFAULTS } from "./page-defaults";
 
 // ── Block components ──────────────────────────────────────────────────────
 import { HeroBlock, HeroSettings, heroDefaults } from "./blocks/HeroBlock";
@@ -18,6 +19,8 @@ import { SpacerBlock, SpacerSettings, spacerDefaults } from "./blocks/SpacerBloc
 import { DividerBlock, DividerSettings, dividerDefaults } from "./blocks/DividerBlock";
 import { TeamBlock, TeamSettings, teamDefaults } from "./blocks/TeamBlock";
 import { ContactFormBlock, ContactFormSettings, contactFormDefaults } from "./blocks/ContactFormBlock";
+import { StoreProductsBlock, StoreProductsSettings, storeProductsDefaults } from "./blocks/StoreProductsBlock";
+import { QuoteFormBlock, QuoteFormSettings, quoteFormDefaults } from "./blocks/QuoteFormBlock";
 
 export const BLOCK_REGISTRY: BlockRegistry = {
   HeroBlock: {
@@ -156,21 +159,30 @@ export const BLOCK_REGISTRY: BlockRegistry = {
     component: ContactFormBlock,
     settingsComponent: ContactFormSettings,
   },
+  StoreProductsBlock: {
+    label: "Productos (tienda)",
+    emoji: "🛒",
+    category: "store",
+    defaultProps: storeProductsDefaults,
+    component: StoreProductsBlock,
+    settingsComponent: StoreProductsSettings,
+  },
+  QuoteFormBlock: {
+    label: "Formulario de cotización",
+    emoji: "📝",
+    category: "form",
+    defaultProps: quoteFormDefaults,
+    component: QuoteFormBlock,
+    settingsComponent: QuoteFormSettings,
+  },
 };
-
-export const DEFAULT_BLOCKS: LandingBlock[] = [
-  { id: "default-hero", type: "HeroBlock" as BlockType, props: {} },
-  { id: "default-stats", type: "StatsBlock" as BlockType, props: {} },
-  { id: "default-logos", type: "LogoCloudBlock" as BlockType, props: {} },
-  { id: "default-services", type: "ServicesBlock" as BlockType, props: {} },
-  { id: "default-projects", type: "ProjectsBlock" as BlockType, props: {} },
-  { id: "default-cta", type: "CtaBandBlock" as BlockType, props: {} },
-];
 
 export const CATEGORY_LABELS: Record<string, string> = {
   hero: "Hero / Banner",
   content: "Contenido",
   data: "Datos dinámicos",
+  store: "Tienda",
+  form: "Formularios",
   media: "Media",
   layout: "Layout",
   interactive: "Interactivo",

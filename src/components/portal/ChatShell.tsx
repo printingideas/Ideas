@@ -15,7 +15,6 @@ import {
   Smile,
   Mic,
   X,
-  Plus,
   Search,
   Users,
   MessageSquare,
@@ -23,7 +22,9 @@ import {
   Loader2,
   FileIcon,
   Download,
+  Trash2,
 } from "lucide-react";
+import { useRealtimeRefresh } from "@/lib/realtime";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -120,20 +121,22 @@ function VoicePlayer({ src, isMe }: { src: string; isMe: boolean }) {
 function AttachmentBubble({
   a,
   isMe,
+  onOpenImage,
 }: {
   a: ChatAttachment;
   isMe: boolean;
+  onOpenImage: (a: ChatAttachment) => void;
 }) {
   if (a.kind === "image") {
     return (
-      <a href={a.url} target="_blank" rel="noopener noreferrer" className="block">
+      <button type="button" onClick={() => onOpenImage(a)} className="block cursor-zoom-in">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src={a.url}
           alt={a.name ?? "imagen"}
           className="max-w-[200px] max-h-[180px] rounded-lg object-cover"
         />
-      </a>
+      </button>
     );
   }
   return (
@@ -171,14 +174,17 @@ export function ChatShell({
   const [draft, setDraft] = useState("");
   const [draftFiles, setDraftFiles] = useState<ChatAttachment[]>([]);
   const [showEmoji, setShowEmoji] = useState(false);
-  const [showNewDM, setShowNewDM] = useState(false);
-  const [userQuery, setUserQuery] = useState("");
+  const [search, setSearch] = useState("");
   const [isRecording, setIsRecording] = useState(false);
   const [recordSecs, setRecordSecs] = useState(0);
   const [isSending, setIsSending] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [loadingMsgs, setLoadingMsgs] = useState(false);
   const [mobileView, setMobileView] = useState<"rooms" | "chat">("rooms");
+  // presence: { userId -> lastSeenISO }
+  const [presence, setPresence] = useState<Record<string, string>>({});
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [lightbox, setLightbox] = useState<ChatAttachment | null>(null);
 
   const scrollEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -201,6 +207,33 @@ export function ChatShell({
 
   useEffect(() => { fetchRooms(); }, [fetchRooms]);
 
+  // ── Presence: heartbeat + polling ────────────────────────────────────────
+  const fetchPresence = useCallback(async () => {
+    try {
+      const r = await fetch("/api/chat/presence");
+      const j = await r.json();
+      if (j.presence) setPresence(j.presence);
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => {
+    // Send heartbeat immediately, then every 30 s
+    fetch("/api/chat/presence", { method: "POST" }).catch(() => {});
+    fetchPresence();
+    const heartbeat = setInterval(() => {
+      fetch("/api/chat/presence", { method: "POST" }).catch(() => {});
+      fetchPresence();
+    }, 30_000);
+    return () => clearInterval(heartbeat);
+  }, [fetchPresence]);
+
+  // ── isOnline helper (seen within last 2 minutes) ──────────────────────────
+  function isOnline(userId: string) {
+    const ts = presence[userId];
+    if (!ts) return false;
+    return Date.now() - new Date(ts).getTime() < 2 * 60 * 1000;
+  }
+
   // ── Load messages ────────────────────────────────────────────────────────
   const fetchMessages = useCallback(async (roomId: string, silent = false) => {
     if (!silent) setLoadingMsgs(true);
@@ -218,6 +251,21 @@ export function ChatShell({
       if (!silent) setLoadingMsgs(false);
     }
   }, []);
+
+  useRealtimeRefresh({
+    channelName: `portal-chat-${currentUser.id}`,
+    tables: ["ChatMessage", "ChatRoom", "ChatRoomMember", "SiteSetting"],
+    fallbackMs: 10000,
+    onChange: () => {
+      fetchRooms();
+      fetchPresence();
+      const roomId = selectedRoomIdRef.current;
+      if (roomId) {
+        fetchMessages(roomId, true);
+        fetch(`/api/chat/rooms/${roomId}/read`, { method: "POST" }).catch(() => {});
+      }
+    },
+  });
 
   // ── Select a room ────────────────────────────────────────────────────────
   const selectRoom = useCallback(
@@ -274,6 +322,16 @@ export function ChatShell({
   useEffect(() => {
     scrollEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // ── Close lightbox on Escape ─────────────────────────────────────────────
+  useEffect(() => {
+    if (!lightbox) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setLightbox(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [lightbox]);
 
   // ── Send message ─────────────────────────────────────────────────────────
   async function sendMessage() {
@@ -415,23 +473,30 @@ export function ChatShell({
     });
     const j = await r.json();
     if (j.room) {
-      setShowNewDM(false);
-      setUserQuery("");
       await fetchRooms();
       selectRoom(j.room);
     }
   }
 
-  // ── Derived values ────────────────────────────────────────────────────────
-  const filteredUsers = useMemo(() => {
-    const q = userQuery.toLowerCase();
-    return allUsers.filter(
-      (u) =>
-        u.id !== currentUser.id &&
-        (!q || `${u.name ?? ""} ${u.company ?? ""}`.toLowerCase().includes(q))
-    );
-  }, [allUsers, currentUser.id, userQuery]);
+  // ── Delete a DM room ──────────────────────────────────────────────────────
+  async function deleteRoom(roomId: string, e: React.MouseEvent) {
+    e.stopPropagation();
+    if (!confirm("¿Eliminar este chat y todos sus mensajes?")) return;
+    setDeletingId(roomId);
+    try {
+      await fetch(`/api/chat/rooms/${roomId}`, { method: "DELETE" });
+      if (selectedRoom?.id === roomId) {
+        setSelectedRoom(null);
+        setMessages([]);
+        setMobileView("rooms");
+      }
+      await fetchRooms();
+    } finally {
+      setDeletingId(null);
+    }
+  }
 
+  // ── Derived values ────────────────────────────────────────────────────────
   function roomName(room: ChatRoom) {
     if (room.type === "general") return "General";
     const other = room.members.find((m) => m.id !== currentUser.id);
@@ -444,6 +509,41 @@ export function ChatShell({
 
   const totalUnread = rooms.reduce((s, r) => s + r.unread, 0);
 
+  // Sidebar shows every teammate directly — General pinned first, then everyone
+  // else (existing conversations sorted by recency, then contacts with no
+  // messages yet, alphabetically). No modal needed to find someone to message.
+  type SidebarEntry = { key: string; isGeneral: boolean; room: ChatRoom | null; other: ChatUser | null };
+
+  const sidebarEntries = useMemo<SidebarEntry[]>(() => {
+    const q = search.trim().toLowerCase();
+    const generalRoom = rooms.find((r) => r.type === "general") ?? null;
+
+    const entries: SidebarEntry[] = [];
+    if (generalRoom && (!q || "general".includes(q))) {
+      entries.push({ key: "general", isGeneral: true, room: generalRoom, other: null });
+    }
+
+    const contacts = allUsers
+      .filter((u) => u.id !== currentUser.id)
+      .filter((u) => !q || `${u.name ?? ""} ${u.company ?? ""}`.toLowerCase().includes(q))
+      .map((u) => {
+        const room = rooms.find(
+          (r) => r.type === "direct" && r.members.some((m) => m.id === u.id)
+        ) ?? null;
+        return { key: u.id, isGeneral: false, room, other: u };
+      })
+      .sort((a, b) => {
+        const at = a.room?.lastMessage?.createdAt;
+        const bt = b.room?.lastMessage?.createdAt;
+        if (at && bt) return bt.localeCompare(at);
+        if (at) return -1;
+        if (bt) return 1;
+        return (a.other?.name ?? "").localeCompare(b.other?.name ?? "");
+      });
+
+    return [...entries, ...contacts];
+  }, [rooms, allUsers, currentUser.id, search]);
+
   // ─────────────────────────────────────────────────────────────────────────
   return (
     <div className="flex h-[calc(100vh-200px)] min-h-[500px] overflow-hidden rounded-2xl border border-white/8 bg-[var(--color-ink-950,#060b14)]">
@@ -454,7 +554,7 @@ export function ChatShell({
         } lg:flex flex-col w-full lg:w-72 lg:flex-none border-r border-white/8`}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-white/8">
+        <div className="px-4 py-3 border-b border-white/8 space-y-2.5">
           <div className="flex items-center gap-2">
             <h2 className="font-semibold text-sm">Chats</h2>
             {totalUnread > 0 && (
@@ -463,63 +563,100 @@ export function ChatShell({
               </span>
             )}
           </div>
-          <button
-            onClick={() => setShowNewDM(true)}
-            className="p-1.5 rounded-lg hover:bg-white/8 text-white/50 hover:text-white transition-colors"
-            title="Nuevo chat directo"
-          >
-            <Plus size={16} />
-          </button>
+          <div className="flex items-center gap-2 bg-white/5 border border-white/10 rounded-lg px-2.5 py-1.5">
+            <Search size={13} className="text-white/40 shrink-0" />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Buscar persona…"
+              className="flex-1 min-w-0 bg-transparent outline-none text-sm placeholder-white/30"
+            />
+            {search && (
+              <button onClick={() => setSearch("")} className="text-white/40 hover:text-white shrink-0">
+                <X size={13} />
+              </button>
+            )}
+          </div>
         </div>
 
-        {/* Room list */}
+        {/* People list — everyone shows up here, no extra click needed */}
         <div className="flex-1 overflow-y-auto py-1">
           {rooms.length === 0 ? (
             <p className="px-4 py-8 text-center text-xs text-white/30">Cargando chats…</p>
+          ) : sidebarEntries.length === 0 ? (
+            <p className="px-4 py-8 text-center text-xs text-white/30">Nadie coincide con &quot;{search}&quot;</p>
           ) : (
-            rooms.map((room) => {
-              const other = roomOther(room);
-              const isSelected = selectedRoom?.id === room.id;
+            sidebarEntries.map((entry) => {
+              const room = entry.room;
+              const isSelected = !!room && selectedRoom?.id === room.id;
+              const online = entry.other ? isOnline(entry.other.id) : false;
+              const name = entry.isGeneral ? "General" : entry.other?.name ?? "Usuario";
               return (
-                <button
-                  key={room.id}
-                  onClick={() => selectRoom(room)}
-                  className={`w-full flex items-center gap-3 px-4 py-3 text-left transition-colors ${
+                <div
+                  key={entry.key}
+                  className={`group flex items-center gap-3 px-4 py-3 transition-colors cursor-pointer ${
                     isSelected
                       ? "bg-[var(--color-brand-500)]/10 border-r-2 border-[var(--color-brand-500)]"
                       : "hover:bg-white/5"
                   }`}
+                  onClick={() => (room ? selectRoom(room) : entry.other && openDM(entry.other.id))}
                 >
-                  {room.type === "general" ? (
+                  {entry.isGeneral ? (
                     <div className="w-9 h-9 rounded-full bg-[var(--color-brand-500)]/20 grid place-items-center shrink-0">
                       <Users size={16} className="text-[var(--color-brand-400)]" />
                     </div>
                   ) : (
-                    <MemberAvatar
-                      id={other?.id ?? ""}
-                      name={other?.name ?? "?"}
-                      avatar={other?.avatar ?? null}
-                      size={36}
-                    />
+                    <div className="relative shrink-0">
+                      <MemberAvatar
+                        id={entry.other?.id ?? ""}
+                        name={entry.other?.name ?? "?"}
+                        avatar={entry.other?.avatar ?? null}
+                        size={36}
+                      />
+                      <span
+                        className={`absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-[var(--color-ink-950)] ${
+                          online ? "bg-emerald-400" : "bg-white/20"
+                        }`}
+                      />
+                    </div>
                   )}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between gap-1">
-                      <span className="text-sm font-medium truncate">{roomName(room)}</span>
-                      {room.unread > 0 && (
-                        <span className="shrink-0 min-w-[18px] h-[18px] rounded-full bg-[var(--color-brand-500)] text-[var(--color-ink-950)] text-[10px] font-bold grid place-items-center px-1">
-                          {room.unread > 99 ? "99+" : room.unread}
-                        </span>
-                      )}
+                      <span className="text-sm font-medium truncate">{name}</span>
+                      <div className="flex items-center gap-1 shrink-0">
+                        {room && room.unread > 0 && (
+                          <span className="min-w-[18px] h-[18px] rounded-full bg-[var(--color-brand-500)] text-[var(--color-ink-950)] text-[10px] font-bold grid place-items-center px-1">
+                            {room.unread > 99 ? "99+" : room.unread}
+                          </span>
+                        )}
+                        {room && !entry.isGeneral && (
+                          <button
+                            onClick={(e) => deleteRoom(room.id, e)}
+                            disabled={deletingId === room.id}
+                            className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-red-500/20 text-white/30 hover:text-red-400 transition-all"
+                            title="Eliminar chat"
+                          >
+                            {deletingId === room.id
+                              ? <Loader2 size={12} className="animate-spin" />
+                              : <Trash2 size={12} />}
+                          </button>
+                        )}
+                      </div>
                     </div>
-                    {room.lastMessage ? (
+                    {room?.lastMessage ? (
                       <p className="text-xs text-white/40 truncate mt-0.5">
                         {room.lastMessage.body ?? "📎 Archivo"}
                       </p>
-                    ) : (
+                    ) : entry.isGeneral ? (
                       <p className="text-xs text-white/25 mt-0.5 italic">Sin mensajes</p>
+                    ) : (
+                      <p className="text-xs text-white/25 mt-0.5 truncate">
+                        {entry.other?.role === "admin" ? "Administrador" : "Empleado"}
+                        {entry.other?.company ? ` · ${entry.other.company}` : ""}
+                      </p>
                     )}
                   </div>
-                </button>
+                </div>
               );
             })
           )}
@@ -561,9 +698,13 @@ export function ChatShell({
               )}
               <div>
                 <div className="font-semibold text-sm">{roomName(selectedRoom)}</div>
-                {selectedRoom.type === "general" && (
+                {selectedRoom.type === "general" ? (
                   <div className="text-[11px] text-white/40">
                     {selectedRoom.members.length} miembros
+                  </div>
+                ) : (
+                  <div className={`text-[11px] font-medium ${isOnline(roomOther(selectedRoom)?.id ?? "") ? "text-emerald-400" : "text-white/30"}`}>
+                    {isOnline(roomOther(selectedRoom)?.id ?? "") ? "● En línea" : "○ Desconectado"}
                   </div>
                 )}
               </div>
@@ -585,8 +726,11 @@ export function ChatShell({
                   {messages.map((msg, i) => {
                     const isMe = msg.authorId === currentUser.id;
                     const prevMsg = messages[i - 1];
+                    const nextMsg = messages[i + 1];
                     const showMeta =
                       !prevMsg || prevMsg.authorId !== msg.authorId;
+                    const isLastInGroup =
+                      !nextMsg || nextMsg.authorId !== msg.authorId;
                     return (
                       <div
                         key={msg.id}
@@ -634,20 +778,22 @@ export function ChatShell({
                                   </div>
                                 )}
                                 {msg.attachments.map((a) => (
-                                  <AttachmentBubble key={a.url} a={a} isMe={isMe} />
+                                  <AttachmentBubble key={a.url} a={a} isMe={isMe} onOpenImage={setLightbox} />
                                 ))}
                               </div>
                             )}
                           </div>
 
-                          <span
-                            className={`text-[10px] text-white/30 px-1 ${
-                              isMe ? "text-right" : ""
-                            }`}
-                          >
-                            {formatTime(msg.createdAt)}
-                            {msg.editedAt && " · editado"}
-                          </span>
+                          {isLastInGroup && (
+                            <span
+                              className={`text-[10px] text-white/30 px-1 ${
+                                isMe ? "text-right" : ""
+                              }`}
+                            >
+                              {formatTime(msg.createdAt)}
+                              {msg.editedAt && " · editado"}
+                            </span>
+                          )}
                         </div>
                       </div>
                     );
@@ -788,7 +934,7 @@ export function ChatShell({
                       t.style.height = "auto";
                       t.style.height = Math.min(t.scrollHeight, 128) + "px";
                     }}
-                    placeholder="Escribe un mensaje… (Enter para enviar, Shift+Enter para nueva línea)"
+                    placeholder="Escribe un mensaje…"
                     rows={1}
                     className="flex-1 resize-none bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder-white/30 outline-none focus:border-[var(--color-brand-500)]/60 transition-colors overflow-y-auto"
                     style={{ maxHeight: 128 }}
@@ -825,80 +971,42 @@ export function ChatShell({
         )}
       </div>
 
-      {/* ══ NEW DM MODAL ════════════════════════════════════════════════════ */}
+      {/* ══ IMAGE LIGHTBOX ═════════════════════════════════════════════════ */}
       <AnimatePresence>
-        {showNewDM && (
-          <>
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 z-50 bg-black/60"
-              onClick={() => { setShowNewDM(false); setUserQuery(""); }}
-            />
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              transition={{ duration: 0.15 }}
-              className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none"
+        {lightbox && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[60] bg-black/90 flex items-center justify-center p-6"
+            onClick={() => setLightbox(null)}
+          >
+            <button
+              onClick={() => setLightbox(null)}
+              className="absolute top-4 right-4 w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 text-white grid place-items-center"
+              title="Cerrar"
             >
-              <div className="w-full max-w-sm bg-[var(--color-ink-900,#0a1322)] rounded-2xl border border-white/10 shadow-2xl overflow-hidden pointer-events-auto">
-                <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
-                  <h3 className="font-semibold text-sm">Nueva conversación</h3>
-                  <button
-                    onClick={() => { setShowNewDM(false); setUserQuery(""); }}
-                    className="p-1 text-white/50 hover:text-white"
-                  >
-                    <X size={16} />
-                  </button>
-                </div>
-                <div className="px-4 py-2 border-b border-white/8">
-                  <div className="flex items-center gap-2">
-                    <Search size={14} className="text-white/40 shrink-0" />
-                    <input
-                      autoFocus
-                      value={userQuery}
-                      onChange={(e) => setUserQuery(e.target.value)}
-                      placeholder="Buscar usuario…"
-                      className="flex-1 bg-transparent outline-none text-sm placeholder-white/30"
-                    />
-                  </div>
-                </div>
-                <div className="max-h-72 overflow-y-auto">
-                  {filteredUsers.length === 0 ? (
-                    <p className="px-4 py-6 text-center text-xs text-white/30">
-                      No se encontraron usuarios
-                    </p>
-                  ) : (
-                    filteredUsers.map((u) => (
-                      <button
-                        key={u.id}
-                        onClick={() => openDM(u.id)}
-                        className="w-full flex items-center gap-3 px-4 py-3 hover:bg-white/5 text-left transition-colors"
-                      >
-                        <MemberAvatar
-                          id={u.id}
-                          name={u.name ?? "?"}
-                          avatar={u.avatar}
-                          size={34}
-                        />
-                        <div className="min-w-0">
-                          <div className="text-sm font-medium truncate">
-                            {u.name ?? "Usuario"}
-                          </div>
-                          <div className="text-xs text-white/40 truncate">
-                            {u.role === "admin" ? "Administrador" : "Empleado"}
-                            {u.company ? ` · ${u.company}` : ""}
-                          </div>
-                        </div>
-                      </button>
-                    ))
-                  )}
-                </div>
-              </div>
-            </motion.div>
-          </>
+              <X size={18} />
+            </button>
+            <a
+              href={lightbox.url}
+              download={lightbox.name ?? true}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="absolute top-4 right-16 w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 text-white grid place-items-center"
+              title="Descargar"
+            >
+              <Download size={16} />
+            </a>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={lightbox.url}
+              alt={lightbox.name ?? "imagen"}
+              onClick={(e) => e.stopPropagation()}
+              className="max-w-full max-h-full rounded-lg object-contain"
+            />
+          </motion.div>
         )}
       </AnimatePresence>
     </div>

@@ -1,12 +1,14 @@
 "use client";
 
-import { useRef, useState, useMemo } from "react";
+import { useRef, useState, useMemo, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { TrelloBoard, type BoardColumn } from "./TrelloBoard";
 import { MemberAvatar } from "./Avatar";
-import { AlignLeft, Calendar, Clock, Plus, X, Loader2, Maximize2, Paperclip, LayoutGrid, CalendarDays } from "lucide-react";
+import { AlignLeft, Calendar, Clock, Plus, X, Loader2, Maximize2, Paperclip, LayoutGrid, CalendarDays, Search, Archive } from "lucide-react";
 import { TaskEditor, type EditorUser } from "./TaskEditor";
 import { TaskCalendar } from "./TaskCalendar";
+import { useRealtimeRefresh } from "@/lib/realtime";
+import type { ColumnOwnerDTO } from "@/lib/task-columns";
 
 export type TaskMember = {
   id: string;
@@ -29,6 +31,9 @@ export type TaskCard = {
   coverImage?: string | null;
   attachments?: string[];
   members?: TaskMember[];
+  orderId?: string | null;
+  orderNumber?: string | null;
+  clientName?: string | null;
   /** Total seconds logged in ended WorkSessions (employee time tracking) */
   loggedSeconds?: number;
   /** Active work session, if the employee is currently clocked in */
@@ -36,10 +41,12 @@ export type TaskCard = {
 };
 
 const DEFAULT_COLUMNS: BoardColumn[] = [
-  { key: "todo", label: "Por hacer", accent: "bg-amber-500" },
-  { key: "in_progress", label: "En progreso", accent: "bg-violet-500" },
-  { key: "blocked", label: "Bloqueadas", accent: "bg-rose-500" },
-  { key: "done", label: "Hechas", accent: "bg-emerald-500" }
+  { key: "todo",        label: "Por hacer",     accent: "bg-amber-500" },
+  { key: "in_progress", label: "En progreso",   accent: "bg-violet-500" },
+  { key: "review",      label: "Para revisión", accent: "bg-sky-500" },
+  { key: "produccion",  label: "Producción",    accent: "bg-orange-500" },
+  { key: "blocked",     label: "Bloqueadas",    accent: "bg-rose-500" },
+  { key: "done",        label: "Hechas",        accent: "bg-emerald-500" }
 ];
 
 export function TaskBoard({
@@ -47,39 +54,115 @@ export function TaskBoard({
   users,
   canEdit = true,
   columns,
+  columnOwners,
   currentUserId,
+  orders,
+  defaultOrderId,
 }: {
   tasks: TaskCard[];
   users: EditorUser[];
   canEdit?: boolean;
   columns?: BoardColumn[];
+  columnOwners?: Record<string, ColumnOwnerDTO[]>;
   currentUserId?: string;
+  orders?: import("./TaskEditor").EditorOrder[];
+  defaultOrderId?: string;
 }) {
   const router = useRouter();
+  useRealtimeRefresh({
+    channelName: `portal-tasks-${currentUserId ?? "admin"}`,
+    tables: ["Task", "TaskColumn", "TaskComment", "TaskActivity", "TaskView", "ApprovalSheet", "WorkSession", "TimeEntry", "Order"],
+    fallbackMs: 15000,
+  });
+
   const cols = columns && columns.length > 0 ? columns : DEFAULT_COLUMNS;
   const [editorOpen, setEditorOpen] = useState(false);
   const [mode, setMode] = useState<"create" | "edit">("create");
   const [active, setActive] = useState<TaskCard | null>(null);
   const [defaultStatus, setDefaultStatus] = useState<string>("todo");
 
-  // ─ View & filters ─
-  const [viewMode, setViewMode] = useState<"board" | "calendar">("board");
-  const [filterAssignee, setFilterAssignee] = useState("");
-  const [filterPriority, setFilterPriority] = useState("");
-  const [filterDue, setFilterDue] = useState<"all" | "overdue" | "week">("all");
+  // Optimistic local copy of tasks — updated immediately on save so the board
+  // reflects changes without waiting for router.refresh() to complete.
+  const [liveTasks, setLiveTasks] = useState<TaskCard[]>(tasks);
+  // Keep in sync when the server-refresh eventually delivers new props.
+  useEffect(() => { setLiveTasks(tasks); }, [tasks]);
 
+  // ─ View & filters (persisted in localStorage) ─
+  const LS_KEY = "taskboard_filters";
+
+  // Always start with defaults so SSR and first client render match (no hydration mismatch).
+  // localStorage values are applied after mount in a useEffect.
+  const [viewMode, setViewMode] = useState<"board" | "calendar">("board");
+  const [filterAssignee, setFilterAssignee] = useState<string>("");
+  const [filterPriority, setFilterPriority] = useState<string>("");
+  const [filterDue, setFilterDue] = useState<"all" | "overdue" | "week">("all");
+  const [search, setSearch] = useState<string>("");
+
+  // Restore persisted filters after hydration, then keep them in sync.
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(LS_KEY) ?? "{}");
+      if (saved.viewMode) setViewMode(saved.viewMode);
+      if (saved.filterAssignee) setFilterAssignee(saved.filterAssignee);
+      if (saved.filterPriority) setFilterPriority(saved.filterPriority);
+      if (saved.filterDue) setFilterDue(saved.filterDue);
+      if (saved.search) setSearch(saved.search);
+    } catch { /* ignore */ }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Persist filters whenever they change
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_KEY, JSON.stringify({ viewMode, filterAssignee, filterPriority, filterDue, search }));
+    } catch { /* ignore */ }
+  }, [viewMode, filterAssignee, filterPriority, filterDue, search]);
+
+  // Dynamically fetch all assignable users as a fallback when the server-side
+  // prop is empty (e.g. employee portal passes users=[]). Both admins and
+  // employees can call /api/empleados GET now.
+  const [liveUsers, setLiveUsers] = useState<EditorUser[]>(users);
+
+  // Keep liveUsers in sync if the prop updates (e.g. router.refresh())
+  useEffect(() => { setLiveUsers(users); }, [users]);
+
+  // Default column owners ("Responsable por columna"), updated optimistically
+  // as soon as the picker in ColumnMenu saves, without waiting for router.refresh().
+  const [liveColumnOwners, setLiveColumnOwners] = useState<Record<string, ColumnOwnerDTO[]>>(columnOwners ?? {});
+  useEffect(() => { setLiveColumnOwners(columnOwners ?? {}); }, [columnOwners]);
+
+  useEffect(() => {
+    if (users.length > 0) return; // already have users from SSR
+    fetch("/api/empleados")
+      .then((r) => r.ok ? r.json() : null)
+      .then((data: { id: string; name: string | null; email: string; role: string; avatar: string | null; company: string | null }[] | null) => {
+        if (!data || !Array.isArray(data) || data.length === 0) return;
+        const mapped: EditorUser[] = data.map((u) => ({
+          id: u.id,
+          name: u.name,
+          email: u.email,
+          role: u.role,
+          avatar: u.avatar ?? null,
+          company: u.company ?? null,
+        }));
+        setLiveUsers(mapped);
+      })
+      .catch(() => null);
+  }, [users]);
   const filteredTasks = useMemo(() => {
     const now = new Date();
     const weekEnd = new Date(now);
     weekEnd.setDate(now.getDate() + 7);
-    return tasks.filter((t) => {
+    const q = search.trim().toLowerCase();
+    return liveTasks.filter((t) => {
+      if (q && !t.title.toLowerCase().includes(q)) return false;
       if (filterAssignee && t.assigneeId !== filterAssignee && !(t.members ?? []).some((m) => m.id === filterAssignee)) return false;
       if (filterPriority && t.priority !== filterPriority) return false;
       if (filterDue === "overdue" && (t.status === "done" || !t.dueDate || new Date(t.dueDate) >= now)) return false;
       if (filterDue === "week" && (!t.dueDate || new Date(t.dueDate) < now || new Date(t.dueDate) > weekEnd)) return false;
       return true;
     });
-  }, [tasks, filterAssignee, filterPriority, filterDue]);
+  }, [tasks, filterAssignee, filterPriority, filterDue, search]);
 
   function openCreate(status: string) {
     setMode("create");
@@ -93,10 +176,52 @@ export function TaskBoard({
     setEditorOpen(true);
   }
 
+  const [archiving, setArchiving] = useState(false);
+  const archiveDone = useCallback(async () => {
+    if (!confirm("¿Archivar todas las tareas en la columna 'Hechas'? Dejarán de aparecer en el tablero.")) return;
+    setArchiving(true);
+    try {
+      await fetch("/api/tareas/archive-done", { method: "POST" });
+      router.refresh();
+    } catch { /* ignore */ } finally {
+      setArchiving(false);
+    }
+  }, [router]);
+
   return (
     <>
       {/* ── Toolbar: view toggle + filters ── */}
       <div className="flex flex-wrap items-center gap-2 mb-3">
+        {/* Nueva Tarea */}
+        {canEdit && (
+          <button
+            onClick={() => openCreate(cols[0]?.key ?? "todo")}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--color-brand-500)] text-[var(--color-ink-950,#060b14)] text-xs font-bold hover:brightness-110 transition"
+          >
+            <Plus size={13} /> Nueva Tarea
+          </button>
+        )}
+
+        {/* Search */}
+        <div className="relative flex items-center">
+          <Search size={12} className="absolute left-2.5 text-white/35 pointer-events-none" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Buscar trabajo..."
+            className="pl-7 pr-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-xs text-white/85 placeholder-white/30 focus:outline-none focus:border-[var(--color-brand-500)] w-44"
+          />
+          {search && (
+            <button
+              onClick={() => setSearch("")}
+              className="absolute right-2 text-white/35 hover:text-white/70"
+            >
+              <X size={11} />
+            </button>
+          )}
+        </div>
+
         {/* View toggle */}
         <div className="flex gap-0.5 p-0.5 bg-white/5 rounded-lg">
           <button
@@ -122,14 +247,14 @@ export function TaskBoard({
         </div>
 
         {/* Assignee filter */}
-        {users.length > 0 && (
+        {liveUsers.length > 0 && (
           <select
             value={filterAssignee}
             onChange={(e) => setFilterAssignee(e.target.value)}
             className="px-2.5 py-1.5 rounded-lg bg-white/5 border border-white/10 text-xs text-white/80 focus:outline-none focus:border-[var(--color-brand-500)]"
           >
             <option value="">Todos los miembros</option>
-            {users.map((u) => (
+            {liveUsers.map((u) => (
               <option key={u.id} value={u.id}>{u.name ?? u.email}</option>
             ))}
           </select>
@@ -167,12 +292,25 @@ export function TaskBoard({
           </button>
         )))}
 
-        {(filterAssignee || filterPriority || filterDue !== "all") && (
+        {(filterAssignee || filterPriority || filterDue !== "all" || search) && (
           <button
-            onClick={() => { setFilterAssignee(""); setFilterPriority(""); setFilterDue("all"); }}
+            onClick={() => { setFilterAssignee(""); setFilterPriority(""); setFilterDue("all"); setSearch(""); }}
             className="px-2.5 py-1.5 rounded-lg text-xs text-white/40 hover:text-white hover:bg-white/8"
           >
             × Limpiar
+          </button>
+        )}
+
+        {/* Archive done tasks */}
+        {canEdit && (
+          <button
+            onClick={archiveDone}
+            disabled={archiving}
+            title="Archivar todas las tareas Hechas"
+            className="ml-auto flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs text-white/40 hover:text-white hover:bg-white/8 disabled:opacity-50"
+          >
+            {archiving ? <Loader2 size={12} className="animate-spin" /> : <Archive size={12} />}
+            Archivar hechas
           </button>
         )}
       </div>
@@ -249,6 +387,23 @@ export function TaskBoard({
               )
             : undefined
         }
+        renderColumnHeaderExtra={(col) => (
+          <ColumnOwnerAvatars owners={liveColumnOwners[col.key] ?? []} />
+        )}
+        renderColumnMenuExtra={
+          canEdit
+            ? (col) => (
+                <ColumnOwnerPicker
+                  col={col}
+                  users={liveUsers}
+                  owners={liveColumnOwners[col.key] ?? []}
+                  onSaved={(next) =>
+                    setLiveColumnOwners((prev) => ({ ...prev, [col.key]: next }))
+                  }
+                />
+              )
+            : undefined
+        }
         renderCard={(t) => {
           // Trello-style behavior: if no explicit cover is set, use the first
           // image attachment as the cover automatically.
@@ -319,10 +474,20 @@ export function TaskBoard({
         mode={mode}
         task={active}
         defaultStatus={defaultStatus}
-        users={users}
+        users={liveUsers}
         canEdit={canEdit}
         currentUserId={currentUserId}
+        orders={orders}
+        defaultOrderId={defaultOrderId}
+        columns={cols}
         onClose={() => setEditorOpen(false)}
+        onSaved={(updated) => {
+          // Update the board card immediately (optimistic)
+          setLiveTasks((prev) =>
+            prev.map((t) => (t.id === updated.id ? updated : t))
+          );
+          setActive(updated);
+        }}
       />
     </>
   );
@@ -370,6 +535,107 @@ function MemberStack({
         </span>
       )}
     </span>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// "Responsable por columna": small avatar stack shown in the column header,
+// and the picker rendered inside "Opciones de lista" (ColumnMenu) to manage it.
+// ─────────────────────────────────────────────────────────────────────────────
+function ColumnOwnerAvatars({ owners }: { owners: ColumnOwnerDTO[] }) {
+  if (owners.length === 0) return null;
+  const visible = owners.slice(0, 3);
+  const overflow = owners.length - visible.length;
+  return (
+    <span
+      className="flex items-center -space-x-1.5"
+      title={`Responsable(s) por defecto: ${owners.map((o) => o.name ?? o.email).join(", ")}`}
+    >
+      {visible.map((o) => (
+        <MemberAvatar key={o.id} id={o.id} name={o.name ?? o.email} avatar={o.avatar} size={18} ring />
+      ))}
+      {overflow > 0 && (
+        <span
+          className="inline-flex items-center justify-center rounded-full bg-white/15 text-white text-[9px] font-semibold ring-2 ring-[var(--color-ink-900,#0a1322)]"
+          style={{ width: 18, height: 18 }}
+        >
+          +{overflow}
+        </span>
+      )}
+    </span>
+  );
+}
+
+function ColumnOwnerPicker({
+  col,
+  users,
+  owners,
+  onSaved
+}: {
+  col: BoardColumn;
+  users: EditorUser[];
+  owners: ColumnOwnerDTO[];
+  onSaved: (next: ColumnOwnerDTO[]) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const ownerIds = new Set(owners.map((o) => o.id));
+
+  async function toggle(user: EditorUser) {
+    const nextIds = ownerIds.has(user.id)
+      ? owners.filter((o) => o.id !== user.id).map((o) => o.id)
+      : [...owners.map((o) => o.id), user.id];
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/tareas/columns/${encodeURIComponent(col.key)}/owners`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userIds: nextIds })
+      });
+      if (!res.ok) throw new Error("No se pudo guardar el responsable.");
+      const next: ColumnOwnerDTO[] = await res.json();
+      onSaved(next);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div>
+      <label className="text-[11px] uppercase tracking-wider text-white/50 font-semibold">
+        Responsable(s) por defecto
+      </label>
+      <p className="text-[10px] text-white/40 mt-0.5 mb-1.5">
+        Se asignan automáticamente a cada tarjeta que entre a esta lista.
+      </p>
+      <div className="max-h-40 overflow-y-auto space-y-0.5 pr-0.5">
+        {users.map((u) => {
+          const checked = ownerIds.has(u.id);
+          return (
+            <button
+              key={u.id}
+              type="button"
+              disabled={busy}
+              onClick={() => toggle(u)}
+              className={`w-full flex items-center gap-2 px-1.5 py-1 rounded-md text-left text-xs transition disabled:opacity-50 ${
+                checked ? "bg-[var(--color-brand-500)]/15 text-white" : "text-white/70 hover:bg-white/5"
+              }`}
+            >
+              <MemberAvatar id={u.id} name={u.name ?? u.email} avatar={u.avatar} size={18} />
+              <span className="truncate flex-1">{u.name ?? u.email}</span>
+              {checked && <span className="text-[var(--color-brand-400,#7dd3fc)]">✓</span>}
+            </button>
+          );
+        })}
+        {users.length === 0 && (
+          <div className="text-[11px] text-white/40 py-2">Sin usuarios disponibles.</div>
+        )}
+      </div>
+      {error && <div className="text-[11px] text-red-300 mt-1">{error}</div>}
+    </div>
   );
 }
 

@@ -1,6 +1,32 @@
+import type { Metadata } from "next";
 import { CtaBand } from "@/components/CtaBand";
 import { ClientsLogos } from "@/components/ClientsLogos";
 import { Sparkles, Target, Heart, Lightbulb, Award, Clock } from "lucide-react";
+import { prisma } from "@/lib/prisma";
+import { LandingRenderer } from "@/components/landing-builder/LandingRenderer";
+import type { LandingBlock } from "@/components/landing-builder/types";
+
+export const revalidate = 60;
+
+export const metadata: Metadata = {
+  title: "Sobre Nosotros | Ideas, LLC — Rotulación e Impresión en PR",
+  description:
+    "Empresa puertorriqueña líder en rotulación e impresión de gran formato. Más de 15 años transformando ideas en soluciones visuales de alta calidad en Puerto Rico.",
+  keywords: [
+    "empresa de rotulación Puerto Rico",
+    "imprenta Puerto Rico",
+    "sobre Ideas LLC",
+    "historia empresa rotulación PR",
+    "quiénes somos rotulación"
+  ],
+  alternates: { canonical: "/nosotros" },
+  openGraph: {
+    title: "Sobre Nosotros | Ideas, LLC — Rotulación e Impresión en PR",
+    description:
+      "Empresa puertorriqueña líder en rotulación e impresión de gran formato. Más de 15 años transformando ideas en soluciones visuales.",
+    url: "https://printingideaspr.com/nosotros"
+  }
+};
 
 const VALUES = [
   { icon: Clock, title: "Eficiencia", desc: "Cumplimos con tiempos de entrega sin comprometer la calidad." },
@@ -10,7 +36,18 @@ const VALUES = [
   { icon: Award, title: "Calidad", desc: "Utilizamos materiales de primera y las mejores técnicas de impresión." }
 ];
 
-export default function NosotrosPage() {
+export default async function NosotrosPage() {
+  const blocksRow = await prisma.siteSetting
+    .findUnique({ where: { key: "pageNosotrosJson" } })
+    .catch(() => null);
+
+  if (blocksRow?.value) {
+    try {
+      const blocks: LandingBlock[] = JSON.parse(blocksRow.value);
+      if (blocks.length > 0) return <LandingRenderer blocks={blocks} />;
+    } catch { /* fall through */ }
+  }
+
   return (
     <>
       <section className="pt-[120px] pb-12">

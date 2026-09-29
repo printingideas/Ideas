@@ -6,12 +6,12 @@ Recreación de [printingideaspr.com](https://printingideaspr.com) con backend, p
 
 - **Next.js 15** (App Router, React 19) + **TypeScript**
 - **TailwindCSS v4** + animaciones con **Framer Motion**
-- **Prisma + SQLite** (cambia a Postgres/MySQL editando `prisma/schema.prisma`)
+- **Prisma + PostgreSQL** (Supabase/Neon/Vercel Postgres)
 - **NextAuth (Auth.js v5)** con credenciales + bcrypt
 - **next-intl** para multi-idioma (Español / English)
 - **Nodemailer** para notificación de cotizaciones por email
 - **Zod** para validación de inputs
-- Subida de imágenes a `/public/uploads`
+- Subida de archivos a Supabase Storage (`uploads`)
 
 ## Funcionalidades
 
@@ -35,7 +35,7 @@ Recreación de [printingideaspr.com](https://printingideaspr.com) con backend, p
 npm install
 cp .env.example .env   # ya hay un .env por defecto para desarrollo
 npm run db:push
-npm run db:seed        # crea admin + servicios y proyectos demo
+npm run db:seed        # requiere ADMIN_PASSWORD, SEED_EMPLOYEE_PASSWORD y SEED_CLIENT_PASSWORD
 npm run dev
 ```
 
@@ -45,9 +45,9 @@ Visita http://localhost:3000
 
 | Rol | Email | Contraseña |
 |-----|-------|------------|
-| Admin | `admin@printingideaspr.com` | `admin123` |
-| Empleado | `empleado@printingideaspr.com` | `empleado123` |
-| Cliente | `cliente@printingideaspr.com` | `cliente123` |
+| Admin | Define `ADMIN_EMAIL` | Define `ADMIN_PASSWORD` |
+| Empleado | Datos de seed | Define `SEED_EMPLOYEE_PASSWORD` |
+| Cliente | Datos de seed | Define `SEED_CLIENT_PASSWORD` |
 
 ## Email (cotizaciones)
 
@@ -64,12 +64,24 @@ SMTP_TO=ventas@printingideaspr.com
 
 Si no se configura, las cotizaciones se guardan en BD igualmente (se ven en `/admin/cotizaciones`).
 
+## Realtime y producciÃ³n
+
+La app usa Supabase Realtime en los portales para refrescar chat, tareas, ponches, Ã³rdenes, facturas, usuarios y configuraciÃ³n sin refrescar manualmente. Si Realtime no estÃ¡ disponible, los componentes caen a refresco periÃ³dico.
+
+Para habilitar los eventos de Postgres en Supabase:
+
+```bash
+psql "$DIRECT_URL" -f scripts/supabase-enable-realtime.sql
+```
+
+Antes de ejecutar `npm run db:seed`, define contraseÃ±as privadas: `ADMIN_PASSWORD`, `SEED_EMPLOYEE_PASSWORD` y `SEED_CLIENT_PASSWORD`. No uses credenciales demo en producciÃ³n.
+
 ## Despliegue
 
 ### Recomendado: Vercel (gratis, 1 click)
 1. Sube el repo a GitHub
 2. Conecta a Vercel
-3. Cambia `DATABASE_URL` a Postgres (Vercel Postgres / Neon / Supabase) y en `schema.prisma` pon `provider = "postgresql"`
+3. Configura `DATABASE_URL`, `DIRECT_URL` y las variables públicas/privadas de Supabase Storage
 4. Define todas las variables de `.env.example`
 
 ### VPS / Docker

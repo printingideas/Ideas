@@ -1,5 +1,16 @@
 @import "tailwindcss";
 
+/* ───── Adelle Condensed — fuente oficial de la Hoja de Aprobacion ─────
+   Archivo real en public/fonts/. Solo se tiene la variante Bold, que se
+   mapea a los pesos 400/700/900 porque la hoja usa texto en negrita. */
+@font-face {
+  font-family: "Adelle Condensed";
+  src: url("/fonts/AdelleCondensed-Bold.ttf") format("truetype");
+  font-weight: 400 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 @theme {
   /* Marca Ideas, LLC — amarillo característico */
   --color-brand-50:  #fff8e6;
@@ -31,7 +42,7 @@
 }
 
 @layer base {
-  html, body { height: 100%; }
+  html, body { height: 100%; overflow-x: clip; }
   html {
     -webkit-text-size-adjust: 100%;
     text-size-adjust: 100%;
@@ -83,6 +94,19 @@
 .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
 .no-scrollbar::-webkit-scrollbar { display: none; }
 
+/* Thicker, more grabbable horizontal scrollbar for the Trello-style board row. */
+.board-hscroll { scrollbar-width: auto; scrollbar-color: rgba(255,255,255,0.35) transparent; }
+.board-hscroll::-webkit-scrollbar { height: 14px; }
+.board-hscroll::-webkit-scrollbar-track { background: transparent; }
+.board-hscroll::-webkit-scrollbar-thumb {
+  background-color: rgba(255,255,255,0.35);
+  border-radius: 8px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+.board-hscroll::-webkit-scrollbar-thumb:hover { background-color: rgba(255,255,255,0.55); }
+.board-hscroll.is-panning { cursor: grabbing; user-select: none; }
+
 .snap-x-start { scroll-snap-type: x mandatory; }
 .snap-x-start > * { scroll-snap-align: start; }
 
@@ -90,7 +114,7 @@
 /* ───── Botones ───── */
 .btn {
   display: inline-flex; align-items: center; justify-content: center;
-  gap: .55rem; padding: .9rem 1.6rem; border-radius: 9999px;
+  gap: .55rem; padding: .9rem 1.6rem; border-radius: var(--site-radius, 14px);
   font-weight: 700; font-size: .95rem; letter-spacing: .01em;
   transition: transform .2s ease, box-shadow .2s ease, background .2s, color .2s, border-color .2s;
   border: 1px solid transparent; position: relative; overflow: hidden;
@@ -101,8 +125,8 @@
 .btn-primary { background: white; color: var(--color-ink-900); box-shadow: 0 10px 30px -12px rgba(255,255,255,.35); }
 .btn-primary:hover { background: #f3f4f6; box-shadow: 0 18px 40px -14px rgba(255,255,255,.5); }
 
-.btn-brand { background: var(--color-brand-500); color: var(--color-ink-900); box-shadow: 0 10px 30px -10px rgba(255,174,0,.55); }
-.btn-brand:hover { background: var(--color-brand-400); box-shadow: 0 18px 40px -14px rgba(255,174,0,.7); }
+.btn-brand { background: var(--color-brand-500); color: var(--color-ink-900); box-shadow: 0 10px 30px -10px color-mix(in srgb, var(--color-brand-500) 55%, transparent); }
+.btn-brand:hover { background: var(--color-brand-400); box-shadow: 0 18px 40px -14px color-mix(in srgb, var(--color-brand-500) 70%, transparent); }
 
 .btn-outline { background: transparent; color: white; border-color: rgba(255,255,255,.25); }
 .btn-outline:hover { border-color: var(--color-brand-500); color: var(--color-brand-500); background: rgba(255,174,0,.05); }
@@ -116,9 +140,9 @@
 /* ───── Layout ───── */
 .section { padding: 6rem 0; }
 .section-tight { padding: 4rem 0; }
-.container-x { width: 100%; max-width: 80rem; margin: 0 auto; padding: 0 1rem; }
-@media (min-width: 640px) { .container-x { padding: 0 1.25rem; } }
-@media (min-width: 1024px) { .container-x { padding: 0 2rem; } }
+.container-x { width: 100%; max-width: 80rem; margin: 0 auto; padding-inline: 1rem; }
+@media (min-width: 640px) { .container-x { padding-inline: 1.25rem; } }
+@media (min-width: 1024px) { .container-x { padding-inline: 2rem; } }
 @media (max-width: 640px) {
   .section { padding: 3.5rem 0; }
   .section-tight { padding: 2.5rem 0; }
@@ -127,7 +151,7 @@
 
 /* ───── Forms (oscuras) ───── */
 .input, .textarea, .select {
-  width: 100%; padding: .9rem 1.05rem; border-radius: .9rem;
+  width: 100%; padding: .9rem 1.05rem; border-radius: var(--site-radius, 14px);
   border: 1px solid rgba(255,255,255,.15); background: var(--color-ink-850);
   color: white;
   font-size: .95rem; transition: border-color .15s, box-shadow .15s, background .15s;
@@ -138,13 +162,13 @@
   background: var(--color-ink-800);
   box-shadow: 0 0 0 4px rgba(255,174,0,.18);
 }
-.select option, select option { background: #0e1a2c; color: white; }
-select { background: #0e1a2c; color: white; color-scheme: dark; }
+.select option, select option { background: var(--color-ink-850); color: white; }
+select { background: var(--color-ink-850); color: white; color-scheme: dark; }
 
 /* ───── Cards (oscuras) ───── */
 .card {
-  background: linear-gradient(160deg, rgba(255,255,255,.06), rgba(255,255,255,.02));
-  border-radius: 1.5rem;
+  background: linear-gradient(160deg, color-mix(in srgb, var(--color-ink-850) 90%, white), var(--color-ink-850));
+  border-radius: var(--site-radius, 14px);
   border: 1px solid rgba(255,255,255,.08);
   box-shadow: 0 1px 2px rgba(0,0,0,.4), 0 12px 40px -18px rgba(0,0,0,.6);
   color: white;
@@ -152,7 +176,7 @@ select { background: #0e1a2c; color: white; color-scheme: dark; }
 }
 .card-elev {
   background: var(--color-ink-850);
-  border-radius: 1.5rem; border: 1px solid rgba(255,255,255,.06);
+  border-radius: var(--site-radius, 14px); border: 1px solid rgba(255,255,255,.06);
   box-shadow: 0 1px 2px rgba(0,0,0,.4), 0 20px 60px -20px rgba(0,0,0,.7);
   color: white;
 }
@@ -278,6 +302,46 @@ select { background: #0e1a2c; color: white; color-scheme: dark; }
   color: white;
 }
 
+/* ── Print styles for Hoja de Aprobación ────────────────────────────── */
+@media print {
+  /* Hide everything by default */
+  body > * { display: none !important; }
+
+  /* Show only the print-only element */
+  .print-only {
+    display: block !important;
+    position: static !important;
+    width: 100% !important;
+    height: auto !important;
+    overflow: visible !important;
+    background: white !important;
+  }
+
+  /* Each approval document gets its own page */
+  .approval-doc {
+    page-break-after: always;
+    break-after: page;
+    width: 100% !important;
+    box-sizing: border-box !important;
+  }
+
+  /* Reset page margins */
+  @page {
+    margin: 0;
+    size: letter landscape;
+  }
+
+  html, body {
+    background: white !important;
+    color: black !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+}
+
+.no-print { /* used in JS — @media print hides these */ }
+.print-only { display: none; }
+
 /* ───── Backgrounds ───── */
 .grid-bg-dark {
   background-image: radial-gradient(circle at 1px 1px, rgba(255,255,255,.07) 1px, transparent 0);
@@ -378,3 +442,72 @@ select { background: #0e1a2c; color: white; color-scheme: dark; }
 ::-webkit-scrollbar-track { background: var(--color-ink-950); }
 ::-webkit-scrollbar-thumb { background: var(--color-ink-700); border-radius: 9999px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--color-brand-600); }
+
+/* ───── Product description prose ───── */
+.prose-product {
+  color: rgba(255,255,255,.72);
+  font-size: .98rem;
+  line-height: 1.8;
+}
+.prose-product > *:first-child { margin-top: 0 !important; }
+.prose-product > *:last-child { margin-bottom: 0 !important; }
+.prose-product p { margin: 0 0 .85rem; max-width: 68ch; }
+.prose-product strong { color: white; font-weight: 850; }
+.prose-product h3,
+.prose-product p:has(> strong:only-child) {
+  display: flex;
+  align-items: center;
+  gap: .65rem;
+  color: white;
+  font-size: .82rem;
+  font-weight: 900;
+  line-height: 1.25;
+  margin: 1.15rem 0 .75rem;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+.prose-product h3::before,
+.prose-product p:has(> strong:only-child)::before {
+  content: "";
+  width: .55rem;
+  height: .55rem;
+  border-radius: 9999px;
+  background: var(--color-brand-500);
+  box-shadow: 0 0 0 4px rgba(255,174,0,.12);
+  flex: 0 0 auto;
+}
+.prose-product hr {
+  border: 0;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(255,255,255,.12), transparent);
+  margin: 1rem 0;
+}
+.prose-product ul,
+.prose-product ol {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: .55rem;
+  padding-left: 0;
+  margin: 0 0 1rem;
+  list-style: none;
+}
+.prose-product li {
+  position: relative;
+  margin: 0;
+  padding: .78rem .9rem .78rem 2.2rem;
+  border: 1px solid rgba(255,255,255,.09);
+  border-radius: .85rem;
+  background: rgba(255,255,255,.045);
+  color: rgba(255,255,255,.74);
+}
+.prose-product li::before {
+  content: "";
+  position: absolute;
+  left: .85rem;
+  top: 1.18rem;
+  width: .42rem;
+  height: .42rem;
+  border-radius: 9999px;
+  background: var(--color-brand-500);
+}
+.prose-product br { display: none; }

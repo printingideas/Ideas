@@ -1,22 +1,42 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { auth } from "@/auth";
-import { revalidatePath } from "next/cache";
+import { revalidatePath, revalidateTag } from "next/cache";
 import type { LandingBlock } from "@/components/landing-builder/types";
-import { DEFAULT_BLOCKS } from "@/components/landing-builder/registry";
+import { DEFAULT_BLOCKS, PAGE_DEFAULTS } from "@/components/landing-builder/page-defaults";
 
-const KEY = "landingJson";
+export const dynamic = "force-dynamic";
 
-export async function GET() {
+const ALLOWED_KEYS = new Set([
+  "landingJson",
+  "pageServiciosJson",
+  "pageProyectosJson",
+  "pageNosotrosJson",
+  "pageTiendaJson",
+  "pageProductoTemplateJson",
+  "pageCotizacionJson",
+]);
+
+function resolveKey(raw: string | null | undefined): string {
+  const k = raw ?? "landingJson";
+  return ALLOWED_KEYS.has(k) ? k : "landingJson";
+}
+
+export async function GET(req: Request) {
+  const key = resolveKey(new URL(req.url).searchParams.get("key"));
   try {
-    const row = await prisma.siteSetting.findUnique({ where: { key: KEY } });
+    const row = await prisma.siteSetting.findUnique({ where: { key } });
     if (row?.value) {
       const blocks: LandingBlock[] = JSON.parse(row.value);
       return NextResponse.json({ blocks });
     }
-    return NextResponse.json({ blocks: DEFAULT_BLOCKS });
-  } catch {
-    return NextResponse.json({ blocks: DEFAULT_BLOCKS });
+    // Use page-specific defaults; only fall back to DEFAULT_BLOCKS for the home landing
+    const fallback = PAGE_DEFAULTS[key] ?? (key === "landingJson" ? DEFAULT_BLOCKS : []);
+    return NextResponse.json({ blocks: fallback });
+  } catch (err) {
+    console.error("[api/landing GET] DB error:", err);
+    const fallback = PAGE_DEFAULTS[key] ?? (key === "landingJson" ? DEFAULT_BLOCKS : []);
+    return NextResponse.json({ blocks: fallback });
   }
 }
 
@@ -27,7 +47,8 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  const body: { blocks: LandingBlock[] } = await req.json();
+  const body: { blocks: LandingBlock[]; key?: string } = await req.json();
+  const key = resolveKey(body.key);
   const blocks = body.blocks;
 
   if (!Array.isArray(blocks)) {
@@ -35,15 +56,22 @@ export async function POST(req: Request) {
   }
 
   await prisma.siteSetting.upsert({
-    where: { key: KEY },
+    where: { key },
     update: { value: JSON.stringify(blocks) },
-    create: { key: KEY, value: JSON.stringify(blocks) },
+    create: { key, value: JSON.stringify(blocks) },
   });
 
-  // Revalidate all landing pages so any ISR cache is cleared
   revalidatePath("/", "layout");
   revalidatePath("/es", "layout");
   revalidatePath("/en", "layout");
+  revalidateTag("home");
+
+  if (key === "pageServiciosJson") revalidatePath("/servicios", "page");
+  if (key === "pageProyectosJson") revalidatePath("/proyectos", "page");
+  if (key === "pageNosotrosJson") revalidatePath("/nosotros", "page");
+  if (key === "pageTiendaJson") revalidatePath("/tienda", "page");
+  if (key === "pageProductoTemplateJson") revalidatePath("/tienda/[slug]", "page");
+  if (key === "pageCotizacionJson") revalidatePath("/cotizacion", "page");
 
   return NextResponse.json({ ok: true });
 }

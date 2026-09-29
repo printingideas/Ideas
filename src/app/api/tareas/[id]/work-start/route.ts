@@ -18,9 +18,22 @@ export async function POST(
 
   const { id: taskId } = await params;
 
-  // Verify the task exists and is assigned to this user (or user is admin)
-  const task = await prisma.task.findUnique({ where: { id: taskId } });
+  // Verify the task exists and the user has permission (admin, assignee, or member)
+  const task = await prisma.task.findUnique({
+    where: { id: taskId },
+    include: { taskMembers: { select: { userId: true } } },
+  });
   if (!task) return NextResponse.json({ error: "not_found" }, { status: 404 });
+
+  if (role !== "admin") {
+    let legacyMembers: string[] = [];
+    try { legacyMembers = task.members ? JSON.parse(task.members) : []; } catch { /* ignore */ }
+    const isAssignee = task.assigneeId === userId;
+    const isMember = legacyMembers.includes(userId) || task.taskMembers.some((m) => m.userId === userId);
+    if (!isAssignee && !isMember) {
+      return NextResponse.json({ error: "forbidden" }, { status: 403 });
+    }
+  }
 
   // If already has an active session on this exact task, return it (idempotent)
   const existing = await prisma.workSession.findFirst({
@@ -30,15 +43,23 @@ export async function POST(
     return NextResponse.json({ session: existing });
   }
 
-  // End any other active sessions this user has on other tasks
+  const now = new Date();
+  // Close any orphaned sessions (started more than 8 hours ago and never ended).
+  const staleThreshold = new Date(now.getTime() - 8 * 60 * 60 * 1000);
   await prisma.workSession.updateMany({
-    where: { userId, endedAt: null },
-    data: { endedAt: new Date() },
+    where: { userId, endedAt: null, startedAt: { lt: staleThreshold } },
+    data: { endedAt: staleThreshold },
   });
 
-  // Create new session
-  const ws = await prisma.workSession.create({
-    data: { taskId, userId },
+  // End any other active sessions and create the new one atomically to prevent race conditions
+  const ws = await prisma.$transaction(async (tx) => {
+    await tx.workSession.updateMany({
+      where: { userId, endedAt: null },
+      data: { endedAt: now },
+    });
+    return tx.workSession.create({
+      data: { taskId, userId },
+    });
   });
 
   // Move task to in_progress if it was todo

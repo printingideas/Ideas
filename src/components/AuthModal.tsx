@@ -4,7 +4,6 @@ import { createContext, useContext, useState, useCallback } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { signIn } from "next-auth/react";
 import { useRouter } from "next/navigation";
-import { useLocale } from "next-intl";
 import { X, Mail, Lock, User as UserIcon, Building2, Phone, Sparkles, ArrowRight } from "lucide-react";
 
 type Mode = "login" | "register";
@@ -38,7 +37,6 @@ export function AuthModalProvider({ children }: { children: React.ReactNode }) {
 function AuthModal({
   isOpen, mode, setMode, onClose
 }: { isOpen: boolean; mode: Mode; setMode: (m: Mode) => void; onClose: () => void }) {
-  const locale = useLocale();
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -59,8 +57,8 @@ function AuthModal({
       setError("Credenciales inválidas. Intenta de nuevo.");
     } else {
       onClose();
-      router.push(`/${locale}/portal`);
       router.refresh();
+      window.location.assign("/portal");
     }
   }
 
@@ -100,22 +98,9 @@ function AuthModal({
       setMode("login");
     } else {
       onClose();
-      router.push(`/${locale}/portal`);
       router.refresh();
+      window.location.assign("/portal");
     }
-  }
-
-  function fillDemo(role: "admin" | "empleado" | "cliente") {
-    const map = {
-      admin: ["admin@printingideaspr.com", "admin123"],
-      empleado: ["empleado@printingideaspr.com", "empleado123"],
-      cliente: ["cliente@printingideaspr.com", "cliente123"]
-    } as const;
-    const [email, password] = map[role];
-    const form = document.getElementById("login-form") as HTMLFormElement | null;
-    if (!form) return;
-    (form.elements.namedItem("email") as HTMLInputElement).value = email;
-    (form.elements.namedItem("password") as HTMLInputElement).value = password;
   }
 
   return (
@@ -203,16 +188,6 @@ function AuthModal({
                       )}
                     </button>
 
-                    <div className="pt-3 mt-2 border-t border-white/10">
-                      <p className="text-[10px] uppercase tracking-widest text-white/45 mb-2">Cuentas demo (clic para autocompletar)</p>
-                      <div className="grid grid-cols-3 gap-1.5">
-                        {(["admin", "empleado", "cliente"] as const).map((r) => (
-                          <button key={r} type="button" onClick={() => fillDemo(r)} className="text-[11px] py-1.5 rounded-md bg-white/5 hover:bg-[var(--color-brand-500)]/20 text-white/75 hover:text-[var(--color-brand-400)] transition capitalize">
-                            {r}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
                   </form>
                 ) : (
                   <form onSubmit={handleRegister} className="space-y-3">

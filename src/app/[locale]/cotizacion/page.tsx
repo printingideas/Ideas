@@ -1,25 +1,41 @@
-import { useTranslations } from "next-intl";
-import { QuoteForm } from "@/components/QuoteForm";
+import type { Metadata } from "next";
+import { prisma } from "@/lib/prisma";
+import { LandingRenderer } from "@/components/landing-builder/LandingRenderer";
+import type { LandingBlock } from "@/components/landing-builder/types";
+import { PAGE_DEFAULTS } from "@/components/landing-builder/registry";
 
-export default function CotizacionPage() {
-  const t = useTranslations("quote");
-  return (
-    <section className="pt-[120px] pb-24">
-      <div className="container-x grid lg:grid-cols-5 gap-12">
-        <div className="lg:col-span-2">
-          <span className="eyebrow">Cotización</span>
-          <h1 className="heading-xl mt-3">{t("title")}</h1>
-          <p className="mt-5 text-white/70 text-lg leading-relaxed">{t("subtitle")}</p>
-          <div className="mt-8 space-y-3 text-sm text-white/85">
-            <div>📞 939-356-3399</div>
-            <div>✉️ ventas@printingideaspr.com</div>
-            <div>📍 Puerto Rico</div>
-          </div>
-        </div>
-        <div className="lg:col-span-3">
-          <QuoteForm />
-        </div>
-      </div>
-    </section>
-  );
+export const revalidate = 60;
+
+export const metadata: Metadata = {
+  title: "Solicita tu Cotización Gratis | Ideas, LLC Puerto Rico",
+  description:
+    "Cuéntanos tu proyecto de rotulación o impresión y recibe una cotización personalizada en menos de 24 horas, sin costo ni compromiso.",
+  keywords: [
+    "cotización rotulación Puerto Rico",
+    "presupuesto impresión gran formato",
+    "cotizar rótulos PR",
+    "solicitar cotización imprenta"
+  ],
+  alternates: { canonical: "/cotizacion" },
+  openGraph: {
+    title: "Solicita tu Cotización Gratis | Ideas, LLC Puerto Rico",
+    description: "Cuéntanos tu proyecto de rotulación o impresión y recibe una cotización personalizada en menos de 24 horas.",
+    url: "https://printingideaspr.com/cotizacion"
+  }
+};
+
+export default async function CotizacionPage() {
+  const blocksRow = await prisma.siteSetting
+    .findUnique({ where: { key: "pageCotizacionJson" } })
+    .catch(() => null);
+
+  let blocks: LandingBlock[] = PAGE_DEFAULTS["pageCotizacionJson"] ?? [];
+  if (blocksRow?.value) {
+    try {
+      const parsed: LandingBlock[] = JSON.parse(blocksRow.value);
+      if (parsed.length > 0) blocks = parsed;
+    } catch { /* use defaults */ }
+  }
+
+  return <LandingRenderer blocks={blocks} />;
 }

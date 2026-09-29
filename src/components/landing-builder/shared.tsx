@@ -14,7 +14,14 @@ function getBgVideoEmbedUrl(url: string): string {
     const u = new URL(url);
     if (u.hostname.includes("youtube.com") || u.hostname.includes("youtu.be")) {
       let id = u.searchParams.get("v") || "";
-      if (u.hostname.includes("youtu.be")) id = u.pathname.slice(1);
+      if (!id) {
+        if (u.hostname.includes("youtu.be")) {
+          id = u.pathname.slice(1);
+        } else {
+          const parts = u.pathname.split("/").filter(Boolean);
+          id = parts[parts.length - 1] || "";
+        }
+      }
       return `https://www.youtube.com/embed/${id}?autoplay=1&mute=1&loop=1&playlist=${id}&controls=0&showinfo=0&rel=0&playsinline=1`;
     }
     if (u.hostname.includes("vimeo.com")) {
@@ -441,8 +448,10 @@ export function BlockShell({
 
   const bgType = (props.bgType as string) || "none";
   const bgVideoUrl = (props.bgVideoUrl as string) || "";
+  const bgOverlay = Boolean(props.bgOverlay);
   const isEmbed = bgVideoUrl ? isBgVideoEmbed(bgVideoUrl) : false;
   const embedUrl = isEmbed ? getBgVideoEmbedUrl(bgVideoUrl) : "";
+  const minHeight = (props.minHeight as number) ?? undefined;
 
   return (
     <section
@@ -464,6 +473,7 @@ export function BlockShell({
         ...(boxShadow ? { boxShadow } : {}),
         ...(opacity < 100 ? { opacity: opacity / 100 } : {}),
         ...(zIndex !== undefined ? { zIndex } : {}),
+        ...(minHeight ? { minHeight } : {}),
       }}
     >
       {/* Video background */}
@@ -489,7 +499,7 @@ export function BlockShell({
         )
       )}
       {/* Overlay for image or video */}
-      {(bgType === "image" || bgType === "video") && props.bgOverlay && (
+      {(bgType === "image" || bgType === "video") && bgOverlay && (
         <div
           className="absolute inset-0 pointer-events-none"
           style={{
@@ -1112,7 +1122,7 @@ export function TypographySettings({
 }
 
 // ── Array editor ───────────────────────────────────────────────────────────
-export function ArrayEditor<T extends Record<string, unknown>>({
+export function ArrayEditor<T extends object>({
   items,
   onChange,
   defaultItem,

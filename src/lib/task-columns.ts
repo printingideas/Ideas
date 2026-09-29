@@ -10,8 +10,7 @@ export type TaskColumnDTO = {
 export const DEFAULT_TASK_COLUMNS: TaskColumnDTO[] = [
   { key: "todo",        label: "Por hacer",       accent: "bg-amber-500" },
   { key: "in_progress", label: "En progreso",      accent: "bg-violet-500" },
-  { key: "review",      label: "Para revisión",    accent: "bg-sky-500" },
-  { key: "blocked",     label: "Bloqueadas",       accent: "bg-rose-500" },
+  { key: "review",      label: "Para revisión",    accent: "bg-sky-500" },  { key: "produccion",  label: "Producci\u00f3n",        accent: "bg-orange-500" },  { key: "blocked",     label: "Bloqueadas",       accent: "bg-rose-500" },
   { key: "done",        label: "Hechas",           accent: "bg-emerald-500" }
 ];
 
@@ -42,6 +41,31 @@ export async function loadTaskColumns(): Promise<TaskColumnDTO[]> {
   });
   if (rows.length === 0) return DEFAULT_TASK_COLUMNS;
   return rows.map((r) => ({ key: r.key, label: r.label, accent: r.accent }));
+}
+
+export type ColumnOwnerDTO = {
+  id: string;
+  name: string | null;
+  email: string;
+  avatar: string | null;
+  role: string;
+};
+
+// Default responsible user(s) per column, keyed by TaskColumn.key, for the
+// "Responsable por columna" feature (PROP-OPS-001).
+export async function loadColumnOwners(): Promise<Record<string, ColumnOwnerDTO[]>> {
+  const rows = await prisma.columnOwner.findMany({
+    orderBy: { createdAt: "asc" },
+    include: {
+      column: { select: { key: true } },
+      user: { select: { id: true, name: true, email: true, avatar: true, role: true } }
+    }
+  });
+  const byColumn: Record<string, ColumnOwnerDTO[]> = {};
+  for (const row of rows) {
+    (byColumn[row.column.key] ??= []).push(row.user);
+  }
+  return byColumn;
 }
 
 // Slugify a label into a status key. Strips diacritics, lowercases, replaces

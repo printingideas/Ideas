@@ -1,8 +1,15 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
+import { revalidatePath, revalidateTag } from "next/cache";
 
 export async function GET() {
+  const session = await auth();
+  const role = (session?.user as { role?: string } | undefined)?.role;
+  if (role !== "admin") {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
   const rows = await prisma.siteSetting.findMany();
   const result: Record<string, string> = {};
   for (const r of rows) result[r.key] = r.value;
@@ -11,7 +18,8 @@ export async function GET() {
 
 export async function PUT(req: Request) {
   const session = await auth();
-  if (session?.user?.role !== "admin") {
+  const role = (session?.user as { role?: string } | undefined)?.role;
+  if (role !== "admin") {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
@@ -27,5 +35,8 @@ export async function PUT(req: Request) {
     )
   );
 
+  revalidateTag("site-config");
+  revalidateTag("home");
+  revalidatePath("/", "layout");
   return NextResponse.json({ ok: true });
 }

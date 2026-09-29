@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { auth } from "@/auth";
+import { logAudit } from "@/lib/audit";
 
 async function getUser() {
   const session = await auth();
@@ -37,7 +38,15 @@ export async function POST(req: NextRequest) {
 
   const count = await prisma.invoice.count();
   const year = new Date().getFullYear();
-  const number = `INV-${year}-${String(count + 1).padStart(4, "0")}`;
+  // Use max(count, last sequence) so deletions don't cause duplicate numbers
+  const last = await prisma.invoice.findFirst({
+    where: { number: { startsWith: `INV-${year}-` } },
+    orderBy: { number: "desc" },
+    select: { number: true },
+  });
+  const lastSeq = last ? parseInt(last.number.split("-")[2] ?? "0", 10) : 0;
+  const seq = Math.max(count, lastSeq) + 1;
+  const number = `INV-${year}-${String(seq).padStart(4, "0")}`;
 
   const invoice = await prisma.invoice.create({
     data: {
@@ -53,6 +62,14 @@ export async function POST(req: NextRequest) {
       notes:   body.notes ?? null,
     },
     include: invoiceInclude,
+  });
+
+  await logAudit({
+    actor: { id: user.id, role: user.role },
+    action: "create",
+    entity: "Invoice",
+    entityId: invoice.id,
+    summary: `Creó la factura ${invoice.number} por $${invoice.amount.toFixed(2)}`,
   });
 
   return NextResponse.json(invoice, { status: 201 });
